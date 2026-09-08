@@ -34,10 +34,6 @@ public:
     // 20-bit code field of the syscall instruction (negative = i-variant).
     void syscall(EEContext& ctx, s32 code);
 
-    // MMIO handlers (wired into Runtime::mem by the Runtime constructor).
-    u64 mmio_read(u32 addr, u32 size);
-    void mmio_write(u32 addr, u64 value, u32 size);
-
     bool quit_requested() const { return m_quit; }
     s32 exit_code() const { return m_exit_code; }
 
@@ -135,8 +131,7 @@ private:
     void sys_refer_sema_status(EEContext& ctx);
     void sys_print(EEContext& ctx);
 
-    // --- MMIO / misc state ---
-    std::array<u8, 0x100> m_gs_priv{}; // GS privileged registers, 0x12000000+
+    // --- misc state ---
     u32 m_intc_mask = 0;
     u32 m_dmac_mask = 0;
     u32 m_gs_imr = 0;
@@ -146,7 +141,6 @@ private:
     std::unordered_map<u32, u32> m_user_syscalls;
     std::unordered_map<u32, std::pair<u32, u64>> m_alarms; // id -> {handler, time}
     u32 m_next_alarm = 1;
-    std::set<u32> m_reported_mmio;
     std::set<s32> m_reported_syscalls;
 
     void log_unimplemented(s32 code, const char* name);

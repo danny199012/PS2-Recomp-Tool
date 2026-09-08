@@ -576,6 +576,136 @@ void Emitter::emit_simple(const Instruction& in, u32 addr) {
     // --- COP2 (VU0 macro) ---
     case Op::Qmfc2: if (rt) line("set128(ctx, %d, ctx.vf[%d]);", rt, rd); break;
     case Op::Qmtc2: line("ctx.vf[%d] = get128(ctx, %d);", rd, rt); break;
+    // --- VU0 macro mode (helpers in vu.cpp; fields: vu_fd/vu_fs/vu_ft, dest, fsf/ftf) ---
+    case Op::Vadd: line("vu_arith(ctx, VuOp::Add, %d, %d, %d, 0x%X, -1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vsub: line("vu_arith(ctx, VuOp::Sub, %d, %d, %d, 0x%X, -1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vmul: line("vu_arith(ctx, VuOp::Mul, %d, %d, %d, 0x%X, -1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vmax: line("vu_arith(ctx, VuOp::Max, %d, %d, %d, 0x%X, -1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vmini: line("vu_arith(ctx, VuOp::Min, %d, %d, %d, 0x%X, -1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vmadd: line("vu_arith(ctx, VuOp::Madd, %d, %d, %d, 0x%X, -1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vmsub: line("vu_arith(ctx, VuOp::Msub, %d, %d, %d, 0x%X, -1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vopmsub: line("vu_opmula(ctx, true, %d, %d, %d, 0x%X);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vopmula: line("vu_opmula(ctx, false, %d, %d, %d, 0x%X);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    // broadcast variants (x/y/z/w = bc 0/1/2/3)
+    case Op::VaddX: line("vu_arith(ctx, VuOp::Add, %d, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VaddY: line("vu_arith(ctx, VuOp::Add, %d, %d, %d, 0x%X, 1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VaddZ: line("vu_arith(ctx, VuOp::Add, %d, %d, %d, 0x%X, 2);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VaddW: line("vu_arith(ctx, VuOp::Add, %d, %d, %d, 0x%X, 3);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VsubX: line("vu_arith(ctx, VuOp::Sub, %d, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VsubY: line("vu_arith(ctx, VuOp::Sub, %d, %d, %d, 0x%X, 1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VsubZ: line("vu_arith(ctx, VuOp::Sub, %d, %d, %d, 0x%X, 2);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VsubW: line("vu_arith(ctx, VuOp::Sub, %d, %d, %d, 0x%X, 3);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmulX: line("vu_arith(ctx, VuOp::Mul, %d, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmulY: line("vu_arith(ctx, VuOp::Mul, %d, %d, %d, 0x%X, 1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmulZ: line("vu_arith(ctx, VuOp::Mul, %d, %d, %d, 0x%X, 2);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmulW: line("vu_arith(ctx, VuOp::Mul, %d, %d, %d, 0x%X, 3);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaddX: line("vu_arith(ctx, VuOp::Madd, %d, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaddY: line("vu_arith(ctx, VuOp::Madd, %d, %d, %d, 0x%X, 1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaddZ: line("vu_arith(ctx, VuOp::Madd, %d, %d, %d, 0x%X, 2);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaddW: line("vu_arith(ctx, VuOp::Madd, %d, %d, %d, 0x%X, 3);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmsubX: line("vu_arith(ctx, VuOp::Msub, %d, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmsubY: line("vu_arith(ctx, VuOp::Msub, %d, %d, %d, 0x%X, 1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmsubZ: line("vu_arith(ctx, VuOp::Msub, %d, %d, %d, 0x%X, 2);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmsubW: line("vu_arith(ctx, VuOp::Msub, %d, %d, %d, 0x%X, 3);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaxX: line("vu_arith(ctx, VuOp::Max, %d, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaxY: line("vu_arith(ctx, VuOp::Max, %d, %d, %d, 0x%X, 1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaxZ: line("vu_arith(ctx, VuOp::Max, %d, %d, %d, 0x%X, 2);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaxW: line("vu_arith(ctx, VuOp::Max, %d, %d, %d, 0x%X, 3);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VminiX: line("vu_arith(ctx, VuOp::Min, %d, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VminiY: line("vu_arith(ctx, VuOp::Min, %d, %d, %d, 0x%X, 1);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VminiZ: line("vu_arith(ctx, VuOp::Min, %d, %d, %d, 0x%X, 2);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VminiW: line("vu_arith(ctx, VuOp::Min, %d, %d, %d, 0x%X, 3);", in.vu_fd, in.vu_fs, in.vu_ft, in.dest); break;
+    // Q / I sources
+    case Op::Vaddq: line("vu_arith_qi(ctx, VuOp::Add, %d, %d, 0x%X, true);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmaddq: line("vu_arith_qi(ctx, VuOp::Madd, %d, %d, 0x%X, true);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vsubq: line("vu_arith_qi(ctx, VuOp::Sub, %d, %d, 0x%X, true);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmsubq: line("vu_arith_qi(ctx, VuOp::Msub, %d, %d, 0x%X, true);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmulq: line("vu_arith_qi(ctx, VuOp::Mul, %d, %d, 0x%X, true);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vaddi: line("vu_arith_qi(ctx, VuOp::Add, %d, %d, 0x%X, false);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmaddi: line("vu_arith_qi(ctx, VuOp::Madd, %d, %d, 0x%X, false);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vsubi: line("vu_arith_qi(ctx, VuOp::Sub, %d, %d, 0x%X, false);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmsubi: line("vu_arith_qi(ctx, VuOp::Msub, %d, %d, 0x%X, false);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmuli: line("vu_arith_qi(ctx, VuOp::Mul, %d, %d, 0x%X, false);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmaxi: line("vu_arith_qi(ctx, VuOp::Max, %d, %d, 0x%X, false);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vminii: line("vu_arith_qi(ctx, VuOp::Min, %d, %d, 0x%X, false);", in.vu_fd, in.vu_fs, in.dest); break;
+    // accumulator destinations
+    case Op::Vadda: line("vu_arith(ctx, VuOp::Adda, 0, %d, %d, 0x%X, -1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vsuba: line("vu_arith(ctx, VuOp::Suba, 0, %d, %d, 0x%X, -1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vmula: line("vu_arith(ctx, VuOp::Mula, 0, %d, %d, 0x%X, -1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vmadda: line("vu_arith(ctx, VuOp::Madda, 0, %d, %d, 0x%X, -1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vmsuba: line("vu_arith(ctx, VuOp::Msuba, 0, %d, %d, 0x%X, -1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VaddaX: line("vu_arith(ctx, VuOp::Adda, 0, %d, %d, 0x%X, 0);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VaddaY: line("vu_arith(ctx, VuOp::Adda, 0, %d, %d, 0x%X, 1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VaddaZ: line("vu_arith(ctx, VuOp::Adda, 0, %d, %d, 0x%X, 2);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VaddaW: line("vu_arith(ctx, VuOp::Adda, 0, %d, %d, 0x%X, 3);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VsubaX: line("vu_arith(ctx, VuOp::Suba, 0, %d, %d, 0x%X, 0);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VsubaY: line("vu_arith(ctx, VuOp::Suba, 0, %d, %d, 0x%X, 1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VsubaZ: line("vu_arith(ctx, VuOp::Suba, 0, %d, %d, 0x%X, 2);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VsubaW: line("vu_arith(ctx, VuOp::Suba, 0, %d, %d, 0x%X, 3);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmulaX: line("vu_arith(ctx, VuOp::Mula, 0, %d, %d, 0x%X, 0);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmulaY: line("vu_arith(ctx, VuOp::Mula, 0, %d, %d, 0x%X, 1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmulaZ: line("vu_arith(ctx, VuOp::Mula, 0, %d, %d, 0x%X, 2);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmulaW: line("vu_arith(ctx, VuOp::Mula, 0, %d, %d, 0x%X, 3);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaddaX: line("vu_arith(ctx, VuOp::Madda, 0, %d, %d, 0x%X, 0);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaddaY: line("vu_arith(ctx, VuOp::Madda, 0, %d, %d, 0x%X, 1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaddaZ: line("vu_arith(ctx, VuOp::Madda, 0, %d, %d, 0x%X, 2);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmaddaW: line("vu_arith(ctx, VuOp::Madda, 0, %d, %d, 0x%X, 3);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmsubaX: line("vu_arith(ctx, VuOp::Msuba, 0, %d, %d, 0x%X, 0);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmsubaY: line("vu_arith(ctx, VuOp::Msuba, 0, %d, %d, 0x%X, 1);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmsubaZ: line("vu_arith(ctx, VuOp::Msuba, 0, %d, %d, 0x%X, 2);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::VmsubaW: line("vu_arith(ctx, VuOp::Msuba, 0, %d, %d, 0x%X, 3);", in.vu_fs, in.vu_ft, in.dest); break;
+    case Op::Vaddaq: line("vu_arith_qi(ctx, VuOp::Adda, 0, %d, 0x%X, true);", in.vu_fs, in.dest); break;
+    case Op::Vmaddaq: line("vu_arith_qi(ctx, VuOp::Madda, 0, %d, 0x%X, true);", in.vu_fs, in.dest); break;
+    case Op::Vsubaq: line("vu_arith_qi(ctx, VuOp::Suba, 0, %d, 0x%X, true);", in.vu_fs, in.dest); break;
+    case Op::Vmsubaq: line("vu_arith_qi(ctx, VuOp::Msuba, 0, %d, 0x%X, true);", in.vu_fs, in.dest); break;
+    case Op::Vmulaq: line("vu_arith_qi(ctx, VuOp::Mula, 0, %d, 0x%X, true);", in.vu_fs, in.dest); break;
+    case Op::Vaddai: line("vu_arith_qi(ctx, VuOp::Adda, 0, %d, 0x%X, false);", in.vu_fs, in.dest); break;
+    case Op::Vmaddai: line("vu_arith_qi(ctx, VuOp::Madda, 0, %d, 0x%X, false);", in.vu_fs, in.dest); break;
+    case Op::Vsubai: line("vu_arith_qi(ctx, VuOp::Suba, 0, %d, 0x%X, false);", in.vu_fs, in.dest); break;
+    case Op::Vmsubai: line("vu_arith_qi(ctx, VuOp::Msuba, 0, %d, 0x%X, false);", in.vu_fs, in.dest); break;
+    case Op::Vmulai: line("vu_arith_qi(ctx, VuOp::Mula, 0, %d, 0x%X, false);", in.vu_fs, in.dest); break;
+    // conversions / moves / integer
+    case Op::Vitof0: line("vu_itof(ctx, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vitof4: line("vu_itof(ctx, %d, %d, 0x%X, 4);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vitof12: line("vu_itof(ctx, %d, %d, 0x%X, 12);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vitof15: line("vu_itof(ctx, %d, %d, 0x%X, 15);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vftoi0: line("vu_ftoi(ctx, %d, %d, 0x%X, 0);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vftoi4: line("vu_ftoi(ctx, %d, %d, 0x%X, 4);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vftoi12: line("vu_ftoi(ctx, %d, %d, 0x%X, 12);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vftoi15: line("vu_ftoi(ctx, %d, %d, 0x%X, 15);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmove: line("vu_move(ctx, %d, %d, 0x%X);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vmr32: line("vu_mr32(ctx, %d, %d, 0x%X);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vabs: line("vu_abs(ctx, %d, %d, 0x%X);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Viadd: line("vu_iadd(ctx, %d, %d, %d);", in.vu_fd, in.vu_fs, in.vu_ft); break;
+    case Op::Visub: line("vu_isub(ctx, %d, %d, %d);", in.vu_fd, in.vu_fs, in.vu_ft); break;
+    case Op::Viaddi: { const s32 imm5 = s32(s8(in.sa << 3)) >> 3; line("vu_iaddi(ctx, %d, %d, %d);", in.vu_ft, in.vu_fs, imm5); break; }
+    case Op::Viand: line("vu_iand(ctx, %d, %d, %d);", in.vu_fd, in.vu_fs, in.vu_ft); break;
+    case Op::Vior: line("vu_ior(ctx, %d, %d, %d);", in.vu_fd, in.vu_fs, in.vu_ft); break;
+    // divide / sqrt / Q
+    case Op::Vdiv: line("vu_div(ctx, %d, %d, %d, %d);", in.vu_fs, in.fsf, in.vu_ft, in.ftf); break;
+    case Op::Vsqrt: line("vu_sqrt(ctx, %d, %d);", in.vu_ft, in.ftf); break;
+    case Op::Vrsqrt: line("vu_rsqrt(ctx, %d, %d, %d, %d);", in.vu_fs, in.fsf, in.vu_ft, in.ftf); break;
+    case Op::Vwaitq: line("vu_waitq(ctx);"); break;
+    // VU memory load/store
+    case Op::Vlqi: line("vu_lqi(ctx, %d, %d, 0x%X);", in.vu_ft, in.vu_fs, in.dest); break;
+    case Op::Vsqi: line("vu_sqi(ctx, %d, %d, 0x%X);", in.vu_ft, in.vu_fs, in.dest); break;
+    case Op::Vlqd: line("vu_lqd(ctx, %d, %d, 0x%X);", in.vu_ft, in.vu_fs, in.dest); break;
+    case Op::Vsqd: line("vu_sqd(ctx, %d, %d, 0x%X);", in.vu_ft, in.vu_fs, in.dest); break;
+    case Op::Vilwr: line("vu_ilwr(ctx, %d, %d, %d);", in.vu_ft, in.vu_fs, in.ftf); break;
+    case Op::Viswr: line("vu_iswr(ctx, %d, %d, %d);", in.vu_ft, in.vu_fs, in.ftf); break;
+    // misc
+    case Op::Vmtir: line("vu_mtir(ctx, %d, %d, %d);", in.vu_fd, in.vu_fs, in.fsf); break;
+    case Op::Vmfir: line("vu_mfir(ctx, %d, %d, 0x%X);", in.vu_fd, in.vu_fs, in.dest); break;
+    case Op::Vrnext: line("vu_rnext(ctx, %d, 0x%X);", in.vu_ft, in.dest); break;
+    case Op::Vrget: line("vu_rget(ctx, %d, 0x%X);", in.vu_ft, in.dest); break;
+    case Op::Vrinit: line("vu_rinit(ctx, %d, %d);", in.vu_fs, in.fsf); break;
+    case Op::Vrxor: line("vu_rxor(ctx, %d, %d);", in.vu_fs, in.fsf); break;
+    case Op::Vclipw: line("vu_clipw(ctx, %d, %d);", in.vu_fs, in.vu_ft); break;
+    case Op::Vnop: break;
+    case Op::Vcallms:
+    case Op::Vcallmsr:
+        line("unimplemented(ctx, 0x%08Xu, 0x%08Xu); // VU micro call (M7)", in.raw, addr);
+        break;
     default:
         line("unimplemented(ctx, 0x%08Xu, 0x%08Xu); // %s", in.raw, addr, r5900::mnemonic(in.op));
         break;

@@ -27,6 +27,12 @@ M0–M3 are done and tested. What exists today:
   full MMI helper set (PCSX2-verified semantics incl. hardware errata), kernel HLE:
   syscall dispatch (ps2sdk numbering), cooperative thread scheduler with
   priorities, semaphores, EE STDOUT console, `_print`
+- `ee::hw` --- DMAC (DMA controller with chain-tag walking: REFE/CNT/NEXT/REF/
+  REFs/CALL/RET/END), VIF (command stream + UNPACK S/V2/V3/V4 formats),
+  GIF (PACKED/REGLIST/IMAGE tags -> GS), GS (register file + 4 MB VRAM), VU memories
+- `ee::vu` --- VU0 macro-mode (COP2): full arithmetic (add/sub/mul/max/min/madd/
+  msub with broadcast, Q/I sources, accumulator), conversions (itof/ftoi), integer
+  ops, moves, divide/sqrt/rsqrt, MAC/status flags (PCSX2-verified), clip
 - CLIs: `ee-disasm`, `ee-analyze`, `ee-recomp`
 
 The pipeline is verified end-to-end: analyze an ELF, recompile to C++, compile

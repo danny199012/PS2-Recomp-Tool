@@ -23,3 +23,11 @@ add_test(NAME runtime COMMAND test_runtime)
 add_executable(test_kernel test_kernel.cpp)
 target_link_libraries(test_kernel PRIVATE ee::runtime)
 add_test(NAME kernel COMMAND test_kernel)
+
+add_executable(test_hw test_hw.cpp)
+target_link_libraries(test_hw PRIVATE ee::runtime)
+add_test(NAME hw COMMAND test_hw)
+
+add_executable(test_vu test_vu.cpp)
+target_link_libraries(test_vu PRIVATE ee::runtime)
+add_test(NAME vu COMMAND test_vu)

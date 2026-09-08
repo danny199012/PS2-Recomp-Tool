@@ -658,39 +658,6 @@ void Kernel::sys_print(EEContext& ctx) {
     set32(ctx, 2, 0);
 }
 
-// --- MMIO ------------------------------------------------------------------------
-
-u64 Kernel::mmio_read(u32 addr, u32 size) {
-    if (addr >= 0x12000000 && addr < 0x12000100) {
-        // GS privileged registers: return stored bytes
-        u64 v = 0;
-        for (u32 i = 0; i < size; ++i)
-            v |= u64(m_gs_priv[(addr - 0x12000000 + i) & 0xFF]) << (8 * i);
-        return v;
-    }
-    if (addr == 0x1000F180)
-        return 0; // EE STDOUT (reading gives nothing)
-    if (m_reported_mmio.insert(addr).second)
-        std::fprintf(stderr, "[kernel] mmio read  0x%08X (size %u) -> 0 (stub)\n", addr, size);
-    return 0;
-}
-
-void Kernel::mmio_write(u32 addr, u64 value, u32 size) {
-    if (addr == 0x1000F180) { // EE STDOUT (sio / debug console)
-        std::putchar(char(value & 0xFF));
-        std::fflush(stdout);
-        return;
-    }
-    if (addr >= 0x12000000 && addr < 0x12000100) {
-        for (u32 i = 0; i < size; ++i)
-            m_gs_priv[(addr - 0x12000000 + i) & 0xFF] = u8(value >> (8 * i));
-        return;
-    }
-    if (m_reported_mmio.insert(addr).second)
-        std::fprintf(stderr, "[kernel] mmio write 0x%08X = 0x%llX (size %u) (stub)\n", addr,
-                     (unsigned long long)value, size);
-}
-
 void Kernel::log_unimplemented(s32 code, const char* name) {
     if (m_reported_syscalls.insert(code).second)
         std::fprintf(stderr, "[kernel] unimplemented syscall %d (%s)\n", code, name);

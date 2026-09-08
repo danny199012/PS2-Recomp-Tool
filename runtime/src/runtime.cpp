@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
+#include <ee/hw.hpp>
 #include <ee/kernel.hpp>
 #include <ee/runtime.hpp>
 
@@ -10,12 +11,14 @@ namespace ee::rt {
 
 Runtime::Runtime() {
     kernel = std::make_unique<Kernel>(*this);
-    mem.mmio_user = kernel.get();
+    hw = std::make_unique<Hw>();
+    hw->mem = &mem;
+    mem.mmio_user = hw.get();
     mem.mmio_read = [](u32 addr, u32 size, void* user) {
-        return static_cast<Kernel*>(user)->mmio_read(addr, size);
+        return static_cast<Hw*>(user)->mmio_read(addr, size);
     };
     mem.mmio_write = [](u32 addr, u64 value, u32 size, void* user) {
-        static_cast<Kernel*>(user)->mmio_write(addr, value, size);
+        static_cast<Hw*>(user)->mmio_write(addr, value, size);
     };
 }
 

@@ -53,6 +53,7 @@ struct Memory {
 
 struct EEContext;
 class Kernel;
+class Hw;
 
 using Function = void (*)(EEContext&);
 using StubHandler = void (*)(EEContext&);
@@ -61,7 +62,8 @@ struct Runtime {
     Memory mem;
     std::unordered_map<u32, Function> functions;
     std::unordered_map<std::string, StubHandler> stubs;
-    std::unique_ptr<Kernel> kernel; // syscall HLE + MMIO + scheduler
+    std::unique_ptr<Kernel> kernel; // syscall HLE + scheduler
+    std::unique_ptr<Hw> hw;         // DMAC/VIF/GIF/GS + VU memories + MMIO
 
     Runtime();
     ~Runtime(); // joins kernel threads
@@ -87,6 +89,8 @@ struct EEContext {
     u32 vq = 0;     // VU0 Q (divide, raw float bits)
     u32 vp = 0;     // VU0 P (EFU)
     u32 vi_imm = 0; // VU0 I (immediate, raw float bits)
+    u128 vacc{};      // VU0 accumulator
+    u32 vr = 0;       // VU0 R (random) register, 23-bit
     u32 vu_status = 0;
     u32 vu_mac = 0;
     u32 vu_clip = 0;
@@ -323,5 +327,41 @@ void op_pmaddh(EEContext& c, int rd, int rs, int rt);
 void op_phmadh(EEContext& c, int rd, int rs, int rt);
 void op_pmsubh(EEContext& c, int rd, int rs, int rt);
 void op_phmsbh(EEContext& c, int rd, int rs, int rt);
+
+// --- VU0 macro-mode helpers (implemented in vu.cpp) ---------------------------
+
+enum class VuOp { Add, Sub, Mul, Max, Min, Adda, Suba, Mula, Madd, Msub, Madda, Msuba };
+
+void vu_arith(EEContext& c, VuOp op, int fd, int fs, int ft, u8 dest, int bc);
+void vu_arith_qi(EEContext& c, VuOp op, int fd, int fs, u8 dest, bool use_q);
+void vu_opmula(EEContext& c, bool sub, int fd, int fs, int ft, u8 dest);
+void vu_itof(EEContext& c, int fd, int fs, u8 dest, int shift);
+void vu_ftoi(EEContext& c, int fd, int fs, u8 dest, int shift);
+void vu_iadd(EEContext& c, int fd, int fs, int ft);
+void vu_isub(EEContext& c, int fd, int fs, int ft);
+void vu_iaddi(EEContext& c, int ft, int fs, s32 imm5);
+void vu_iand(EEContext& c, int fd, int fs, int ft);
+void vu_ior(EEContext& c, int fd, int fs, int ft);
+void vu_move(EEContext& c, int fd, int fs, u8 dest);
+void vu_mr32(EEContext& c, int fd, int fs, u8 dest);
+void vu_abs(EEContext& c, int fd, int fs, u8 dest);
+void vu_div(EEContext& c, int fs, int fsf, int ft, int ftf);
+void vu_sqrt(EEContext& c, int ft, int ftf);
+void vu_rsqrt(EEContext& c, int fs, int fsf, int ft, int ftf);
+void vu_waitq(EEContext& c);
+void vu_lqi(EEContext& c, int ft, int fs, u8 dest);
+void vu_sqi(EEContext& c, int ft, int fs, u8 dest);
+void vu_lqd(EEContext& c, int ft, int fs, u8 dest);
+void vu_sqd(EEContext& c, int ft, int fs, u8 dest);
+void vu_ilwr(EEContext& c, int ft, int fs, int ftf);
+void vu_iswr(EEContext& c, int ft, int fs, int ftf);
+void vu_mtir(EEContext& c, int fd, int fs, int fsf);
+void vu_mfir(EEContext& c, int fd, int fs, u8 dest);
+void vu_rget(EEContext& c, int ft, u8 dest);
+void vu_rnext(EEContext& c, int ft, u8 dest);
+void vu_rinit(EEContext& c, int fs, int fsf);
+void vu_rxor(EEContext& c, int fs, int fsf);
+void vu_clipw(EEContext& c, int fs, int ft);
+void vu_nop(EEContext& c);
 
 } // namespace ee::rt
