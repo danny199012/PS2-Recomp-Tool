@@ -59,7 +59,8 @@ int main() {
 
     // --- GIF: IMAGE mode (1 quad of pixel data -> VRAM) ---
     {
-        Gs gs2;
+        auto gs2_obj = std::make_unique<Gs>();
+        Gs& gs2 = *gs2_obj;
         gs2.image_dst = 0x100;
         u8 buf[32] = {};
         // tag: NLOOP=1, FLG=2 (IMAGE), EOP=1
@@ -129,7 +130,8 @@ int main() {
 
     // --- DMAC: GIF channel chain transfer (NEXT tag + END) ---
     {
-        Hw hw2;
+        auto hw2_obj = std::make_unique<Hw>();
+        Hw& hw2 = *hw2_obj;
         hw2.mem = &rt.mem;
         // Build a chain in guest RAM:
         // tag0 @ 0x100000: NEXT, qwc=1, addr=0x100040 (tag1 follows data at 0x100010)
