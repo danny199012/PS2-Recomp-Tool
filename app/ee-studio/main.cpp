@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
+
+#ifdef _MSC_VER
+#define _CRT_SECURE_NO_WARNINGS // MSVC: fopen/strncpy/etc. are fine for us here
+#endif
+
 // ee-studio: Game library + pipeline runner GUI for EERecomp.
 // Built with SDL3 + Dear ImGui (when available).
 // When SDL3 is not found, compiles as a headless CLI stub.
@@ -96,7 +101,7 @@ void on_dialog_result(void* userdata, const char* const* filelist, int /*filter*
 
 void pick_folder(DialogResult& res, SDL_Window* w) {
 #if SDL_VERSION_ATLEAST(3, 2, 0)
-    SDL_ShowFolderPickerDialog(on_dialog_result, &res, w, nullptr, false);
+    SDL_ShowOpenFolderDialog(on_dialog_result, &res, w, nullptr, false);
 #else
     (void)res;
     (void)w;

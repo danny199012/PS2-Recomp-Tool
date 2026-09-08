@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
+#ifdef _MSC_VER
+#define _CRT_SECURE_NO_WARNINGS // MSVC: fopen/strncpy/etc. are fine for us here
+#endif
+//
 // game-launcher: per-game release launcher template for EERecomp ports.
 //
 // A game's recompiled C++ (EE_GAME_RECOMP_SOURCES) and overrides
