@@ -53,6 +53,19 @@ struct GameEntry {
     bool is_iso = false;
 };
 
+// PS2 executables often have no .elf extension (e.g. "SLUS_210.66"), so detect
+// them by content: ELF magic + MIPS machine, not just by file extension.
+bool looks_like_ps2_elf(const fs::path& p) {
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return false;
+    unsigned char hdr[20] = {};
+    f.read(reinterpret_cast<char*>(hdr), sizeof hdr);
+    if (f.gcount() < 20) return false;
+    if (hdr[0] != 0x7F || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F') return false;
+    const unsigned machine = unsigned(hdr[18]) | (unsigned(hdr[19]) << 8);
+    return machine == 8; // EM_MIPS
+}
+
 std::vector<GameEntry> scan_directory(const std::string& dir) {
     std::vector<GameEntry> games;
     std::error_code ec;
@@ -67,7 +80,8 @@ std::vector<GameEntry> scan_directory(const std::string& dir) {
         if (name.empty() || name[0] == '.') continue;
         std::string lower = name;
         for (auto& c : lower) c = char(std::tolower((unsigned char)c));
-        const bool is_elf = lower.size() > 4 && lower.substr(lower.size() - 4) == ".elf";
+        const bool has_elf_ext = lower.size() > 4 && lower.substr(lower.size() - 4) == ".elf";
+        const bool is_elf = has_elf_ext || looks_like_ps2_elf(it->path());
         const bool is_iso = lower.size() > 4 &&
                             (lower.substr(lower.size() - 4) == ".iso" ||
                              lower.substr(lower.size() - 4) == ".bin");
@@ -210,7 +224,7 @@ int main(int argc, char** argv) {
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Open Directory...")) browser.open("", true);
-                if (ImGui::MenuItem("Open Game...")) browser.open(".elf;.iso;.bin");
+                if (ImGui::MenuItem("Open Game...")) browser.open("");
                 if (ImGui::MenuItem("Quit")) quit = true;
                 ImGui::EndMenu();
             }

@@ -135,6 +135,10 @@ struct ToolState {
     char config_buf[512] = {};
     char recomp_out_buf[512] = {};
     bool emit_comments = true;
+
+    // PS2 executables often have no .elf extension (e.g. "SLUS_210.66");
+    // default to showing all files so those are selectable.
+    bool browse_all_files = true;
 };
 
 // Load the ELF and rebuild the info dump (mirrors ee-disasm header output).
@@ -417,7 +421,7 @@ int run_gui() {
 
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("Open ELF...")) browser.open(".elf");
+                if (ImGui::MenuItem("Open File...")) browser.open(st.browse_all_files ? "" : ".elf");
                 if (ImGui::MenuItem("Quit")) quit = true;
                 ImGui::EndMenu();
             }
@@ -431,7 +435,8 @@ int run_gui() {
         std::snprintf(elf_buf, sizeof elf_buf, "%s", st.elf_path.c_str());
         ImGui::InputText("##elf", elf_buf, sizeof elf_buf);
         st.elf_path = elf_buf;
-        if (ImGui::Button("Browse...")) browser.open(".elf");
+        ImGui::Checkbox("Show all files (some PS2 execs have no .elf)", &st.browse_all_files);
+        if (ImGui::Button("Browse...")) browser.open(st.browse_all_files ? "" : ".elf");
         ImGui::SameLine();
         if (ImGui::Button("Load ELF")) load_elf(st, log);
         if (!st.image && !st.load_error.empty())
