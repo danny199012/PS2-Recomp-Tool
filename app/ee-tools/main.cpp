@@ -15,13 +15,12 @@
 #include <ee/r5900.hpp>
 
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_dialog.h>
-#include <SDL3/SDL_version.h>
 
 #ifdef EE_HAS_IMGUI
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
+#include "../ui_filebrowser.hpp"
 #endif
 
 #include <cctype>
@@ -82,38 +81,6 @@ bool write_file(const std::string& path, const std::string& data) {
     if (!f) return false;
     f << data;
     return true;
-}
-
-// Native file dialog result (SDL calls the callback on its own thread).
-struct DialogResult {
-    std::mutex mx;
-    std::string path;
-    bool has = false;
-};
-
-void on_dialog_result(void* userdata, const char* const* filelist, int /*filter*/) {
-    auto* res = static_cast<DialogResult*>(userdata);
-    if (!filelist || !filelist[0]) return;
-    std::lock_guard<std::mutex> lk(res->mx);
-    res->path = filelist[0];
-    res->has = true;
-}
-
-void pick_file(DialogResult& res, SDL_Window* w, const char* filter_name, const char* filter_pattern) {
-#if SDL_VERSION_ATLEAST(3, 2, 0)
-    static const SDL_DialogFileFilter filters[] = {
-        {"ELF", "*.elf"},
-        {"All files", "*"},
-    };
-    (void)filter_name;
-    (void)filter_pattern;
-    SDL_ShowOpenFileDialog(on_dialog_result, &res, w, filters, 2, nullptr, false);
-#else
-    (void)res;
-    (void)w;
-    (void)filter_name;
-    (void)filter_pattern;
-#endif
 }
 
 #ifdef EE_HAS_IMGUI
@@ -420,7 +387,7 @@ int run_gui() {
     ImGui_ImplSDLRenderer3_Init(renderer);
 
     ToolState st;
-    DialogResult dlg;
+    uitools::FileBrowser browser;
     std::string log = "ee-tools ready. Open an ELF to begin.\n";
 
     bool quit = false;
@@ -435,11 +402,10 @@ int run_gui() {
                 load_elf(st, log);
             }
         }
-        // Native file dialog result arrives via callback.
-        if (dlg.has) {
-            std::lock_guard<std::mutex> lk(dlg.mx);
-            dlg.has = false;
-            st.elf_path = dlg.path;
+        // In-app file browser (no OS-native dialog dependency).
+        if (browser.result_ready) {
+            browser.result_ready = false;
+            st.elf_path = browser.result;
             load_elf(st, log);
         }
 
@@ -447,9 +413,11 @@ int run_gui() {
         ImGui_ImplSDLRenderer3_NewFrame();
         ImGui::NewFrame();
 
+        browser.draw();
+
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("Open ELF...")) pick_file(dlg, window, "ELF", "*.elf");
+                if (ImGui::MenuItem("Open ELF...")) browser.open(".elf");
                 if (ImGui::MenuItem("Quit")) quit = true;
                 ImGui::EndMenu();
             }
@@ -463,7 +431,7 @@ int run_gui() {
         std::snprintf(elf_buf, sizeof elf_buf, "%s", st.elf_path.c_str());
         ImGui::InputText("##elf", elf_buf, sizeof elf_buf);
         st.elf_path = elf_buf;
-        if (ImGui::Button("Browse...")) pick_file(dlg, window, "ELF", "*.elf");
+        if (ImGui::Button("Browse...")) browser.open(".elf");
         ImGui::SameLine();
         if (ImGui::Button("Load ELF")) load_elf(st, log);
         if (!st.image && !st.load_error.empty())
@@ -555,6 +523,8 @@ if (ImGui::BeginTabItem("Recompile")) {
         ImGui::End();
 
         ImGui::Render();
+        SDL_SetRenderDrawColor(renderer, 16, 16, 20, 255);
+        SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
     }

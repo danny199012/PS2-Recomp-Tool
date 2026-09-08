@@ -49,11 +49,10 @@
 
 #if EE_GUI_MODE
 #include <SDL3/SDL.h>
-#include <SDL3/SDL_dialog.h>
-#include <SDL3/SDL_version.h>
 #include "imgui.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlrenderer3.h"
+#include "../ui_filebrowser.hpp"
 #endif
 
 #if EE_GAME_HAS_RECOMP
@@ -333,20 +332,9 @@ struct GuiState {
     std::mutex console_mx;
     std::thread worker;
 
-    // Native file dialog result (SDL calls the callback on its own thread).
-    std::mutex dialog_mx;
-    std::string dialog_path;
-    bool dialog_has = false;
-    bool want_browse = false;
+    // In-app file browser for the disc prompt (no OS-native dialog needed).
+    uitools::FileBrowser browser;
 };
-
-void launcher_dialog_cb(void* userdata, const char* const* filelist, int /*filter*/) {
-    auto* g = static_cast<GuiState*>(userdata);
-    if (!filelist || !filelist[0]) return;
-    std::lock_guard<std::mutex> lk(g->dialog_mx);
-    g->dialog_path = filelist[0];
-    g->dialog_has = true;
-}
 
 // Larger UI font: prefer a real TTF at a bigger point size, else scale the
 // default font. Called once after ImGui::CreateContext().
@@ -432,44 +420,32 @@ int run_gui(int argc, char** argv) {
                 }
             }
         }
-        // Native file browser (SDL3 >= 3.2): the result arrives async in the callback.
-        if (g.want_browse) {
-            g.want_browse = false;
-#if SDL_VERSION_ATLEAST(3, 2, 0)
-            static const SDL_DialogFileFilter filters[] = {
-                {"PS2 disc image", "*.iso;*.bin"},
-                {"PS2 executable", "*.elf"},
-                {"All files", "*"},
-            };
-            SDL_ShowOpenFileDialog(launcher_dialog_cb, &g, window, filters, 3, nullptr, false);
-#endif
-        }
-        {
-            std::lock_guard<std::mutex> lk(g.dialog_mx);
-            if (g.dialog_has) {
-                g.dialog_has = false;
-                const std::string picked = g.dialog_path;
-                g.disc_input = picked;
-                std::string lower = picked;
-                for (auto& c : lower) c = char(std::tolower((unsigned char)c));
-                const bool is_iso = lower.size() > 4 &&
-                                    (lower.substr(lower.size() - 4) == ".iso" ||
-                                     lower.substr(lower.size() - 4) == ".bin");
-                if (is_iso && open_disc(g.disc, picked)) {
-                    save_boot_elf(g.disc, data_dir(argv[0]));
-                    g.status = "Disc opened: " + g.disc.boot_elf;
-                    gui_log(g, "disc:  " + picked + "\n");
-                    gui_log(g, "boot:  " + g.disc.boot_elf + "\n");
-                } else if (!is_iso) {
-                    g.status = "Selected file is not a disc image (.iso/.bin).";
-                } else {
-                    g.status = g.disc.error;
-                }
-            }
-        }
         ImGui_ImplSDL3_NewFrame();
         ImGui_ImplSDLRenderer3_NewFrame();
         ImGui::NewFrame();
+
+        // In-app file browser (works without OS-native dialogs).
+        g.browser.draw();
+        if (g.browser.result_ready) {
+            g.browser.result_ready = false;
+            const std::string picked = g.browser.result;
+            g.disc_input = picked;
+            std::string lower = picked;
+            for (auto& c : lower) c = char(std::tolower((unsigned char)c));
+            const bool is_iso = lower.size() > 4 &&
+                                (lower.substr(lower.size() - 4) == ".iso" ||
+                                 lower.substr(lower.size() - 4) == ".bin");
+            if (is_iso && open_disc(g.disc, picked)) {
+                save_boot_elf(g.disc, data_dir(argv[0]));
+                g.status = "Disc opened: " + g.disc.boot_elf;
+                gui_log(g, "disc:  " + picked + "\n");
+                gui_log(g, "boot:  " + g.disc.boot_elf + "\n");
+            } else if (!is_iso) {
+                g.status = "Selected file is not a disc image (.iso/.bin).";
+            } else {
+                g.status = g.disc.error;
+            }
+        }
 
         // --- Disc window ---
         ImGui::Begin("Disc");
@@ -484,7 +460,7 @@ int run_gui(int argc, char** argv) {
             ImGui::InputText("##disc", disc_buf, sizeof(disc_buf));
             g.disc_input = disc_buf;
             ImGui::SameLine();
-            if (ImGui::Button("Browse...")) g.want_browse = true;
+            if (ImGui::Button("Browse...")) g.browser.open(".iso;.bin;.elf");
             if (ImGui::Button("Open disc image")) {
                 if (open_disc(g.disc, g.disc_input)) {
                     save_boot_elf(g.disc, data_dir(argv[0]));
@@ -585,6 +561,8 @@ int run_gui(int argc, char** argv) {
         ImGui::End();
 
         ImGui::Render();
+        SDL_SetRenderDrawColor(renderer, 16, 16, 20, 255);
+        SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
         SDL_RenderPresent(renderer);
     }
