@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <set>
 #include <unordered_map>
+#include <ee/iop.hpp>
+#include <unordered_map>
 #include <vector>
 
 namespace ee::rt {
@@ -131,6 +133,9 @@ public:
     std::array<u8, 0x4000> vu1_imem{}; // 16 KB
 
     std::array<u8, 0x100> timers{}; // stub register file
+
+    Iop iop;               // IOP HLE (SIF, CDVD, pad, MC)
+    bool vu_micro_run = false;  // set by VIF MSCAL before VU1 step
 
     u64 mmio_read(u32 addr, u32 size);
     void mmio_write(u32 addr, u64 value, u32 size);

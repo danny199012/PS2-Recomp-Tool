@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <ee/hw.hpp>
+#include <ee/iop.hpp>
 #include <ee/runtime.hpp>
+#include <ee/vu1.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -257,10 +259,12 @@ size_t Vif::feed(Hw& hw, int which, const u8* data, size_t size) {
         case 0x06: break;                        // MSKPATH3 (TODO)
         case 0x07: mark = imm; break;            // MARK
         case 0x08: case 0x09: case 0x13: break;  // FLUSHE/FLUSH/FLUSHA (sync; nop here)
-        case 0x14: case 0x15: // MSCAL / MSCALF: kick VU microprogram
+        case 0x14: case 0x15: { // MSCAL / MSCALF: kick VU microprogram
             micro_kick = true;
             micro_kick_addr = imm;
+            run_vu_microcode(hw, which, imm);
             break;
+        }
         case 0x17: break; // MSCNT
         case 0x20: // STMASK
             if (pos + 4 > size) return pos;
@@ -510,6 +514,22 @@ void Dmac::transfer(Hw& hw, int c, u32 addr, u32 qwc, bool to_spr) {
         u8* dst = hw.mem->translate(0x70000000 + sadr);
         if (src)
             std::memcpy(dst, src, bytes);
+        break;
+    }
+    case 5: { // SIF0: IOP -> EE (receive)
+        const u8* src = hw.read(addr, bytes);
+        if (src)
+            hw.iop.sif0_recv(hw, src, u32(bytes));
+        break;
+    }
+    case 6: { // SIF1: EE -> IOP (send)
+        u8* dst = hw.write_ptr(addr, bytes);
+        if (dst)
+            hw.iop.sif1_send(hw, dst, u32(bytes));
+        break;
+    }
+    case 7: { // SIF2: control
+        hw.iop.sif2_control(hw, 0);
         break;
     }
     default:

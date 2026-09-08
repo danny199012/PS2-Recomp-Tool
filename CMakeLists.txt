@@ -35,4 +35,8 @@ endif()
 if(EE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+
+if(EE_BUILD_TOOLS)
+  add_subdirectory(app/ee-studio)
+endif()
 endif()
