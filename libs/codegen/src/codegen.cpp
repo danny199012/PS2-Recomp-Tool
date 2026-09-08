@@ -385,6 +385,8 @@ void Emitter::emit_simple(const Instruction& in, u32 addr) {
     case Op::Maddu1: line("op_maddu1(ctx, %d, %d, %d);", rs, rt, rd); break;
     case Op::Mfsa: if (rd) line("set64(ctx, %d, ctx.sa);", rd); break;
     case Op::Mtsa: line("ctx.sa = gpr32(ctx, %d);", rs); break;
+    case Op::Mtsab: line("ctx.sa = (gpr32(ctx, %d) & 0xF) ^ 0x%X;", rs, unsigned(in.imm) & 0xF); break;
+    case Op::Mtsah: line("ctx.sa = ((gpr32(ctx, %d) & 7) ^ %u) << 1;", rs, unsigned(in.imm) & 7); break;
     // --- loads ---
     case Op::Lb: if (rt) line("set32(ctx, %d, ld8s(ctx, %s));", rt, ea); break;
     case Op::Lbu: if (rt) line("set32(ctx, %d, ld8u(ctx, %s));", rt, ea); break;
@@ -431,10 +433,10 @@ void Emitter::emit_simple(const Instruction& in, u32 addr) {
     case Op::Teqi: line("if (gpr(ctx, %d) == u64(s64(%d))) unimplemented(ctx, 0x%08Xu, 0x%08Xu);", rs, simm, in.raw, addr); break;
     case Op::Tnei: line("if (gpr(ctx, %d) != u64(s64(%d))) unimplemented(ctx, 0x%08Xu, 0x%08Xu);", rs, simm, in.raw, addr); break;
     // --- MMI ---
-    case Op::Mfhi1: if (rd) line("set128(ctx, %d, ctx.hi1);", rd); break;
-    case Op::Mthi1: line("ctx.hi1 = get128(ctx, %d);", rs); break;
-    case Op::Mflo1: if (rd) line("set128(ctx, %d, ctx.lo1);", rd); break;
-    case Op::Mtlo1: line("ctx.lo1 = get128(ctx, %d);", rs); break;
+    case Op::Mfhi1: if (rd) line("set64(ctx, %d, ctx.hi.hi);", rd); break;
+    case Op::Mthi1: line("ctx.hi.hi = gpr(ctx, %d);", rs); break;
+    case Op::Mflo1: if (rd) line("set64(ctx, %d, ctx.lo.hi);", rd); break;
+    case Op::Mtlo1: line("ctx.lo.hi = gpr(ctx, %d);", rs); break;
     case Op::Pmthi: line("ctx.hi = get128(ctx, %d);", rs); break;
     case Op::Pmtlo: line("ctx.lo = get128(ctx, %d);", rs); break;
     case Op::Pmfhi: if (rd) line("set128(ctx, %d, ctx.hi);", rd); break;
@@ -497,6 +499,32 @@ void Emitter::emit_simple(const Instruction& in, u32 addr) {
     case Op::Pcpyld: if (rd) line("op_pcpyld(ctx, %d, %d, %d);", rd, rs, rt); break;
     case Op::Pcpyud: if (rd) line("op_pcpyud(ctx, %d, %d, %d);", rd, rs, rt); break;
     case Op::Pcpyh: if (rd) line("op_pcpyh(ctx, %d, %d);", rd, rt); break;
+    case Op::Pext5: if (rd) line("op_pext5(ctx, %d, %d);", rd, rt); break;
+    case Op::Ppac5: if (rd) line("op_ppac5(ctx, %d, %d);", rd, rt); break;
+    case Op::Qfsrv: if (rd) line("op_qfsrv(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pabsw: if (rd) line("op_pabsw(ctx, %d, %d);", rd, rt); break;
+    case Op::Pabsh: if (rd) line("op_pabsh(ctx, %d, %d);", rd, rt); break;
+    case Op::Padsbh: if (rd) line("op_padsbh(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pexeh: if (rd) line("op_pexeh(ctx, %d, %d);", rd, rt); break;
+    case Op::Prevh: if (rd) line("op_prevh(ctx, %d, %d);", rd, rt); break;
+    case Op::Pexch: if (rd) line("op_pexch(ctx, %d, %d);", rd, rt); break;
+    case Op::Pexew: if (rd) line("op_pexew(ctx, %d, %d);", rd, rt); break;
+    case Op::Pexcw: if (rd) line("op_pexcw(ctx, %d, %d);", rd, rt); break;
+    case Op::Prot3w: if (rd) line("op_prot3w(ctx, %d, %d);", rd, rt); break;
+    // multiply/divide families write LO/HI even when rd == 0 (helpers check rd)
+    case Op::Pmaddw: line("op_pmaddw(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pmsubw: line("op_pmsubw(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pmultw: line("op_pmultw(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pmultuw: line("op_pmultuw(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pmadduw: line("op_pmadduw(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pmulth: line("op_pmulth(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pdivw: line("op_pdivw(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pdivbw: line("op_pdivbw(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pdivuw: line("op_pdivuw(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pmaddh: line("op_pmaddh(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Phmadh: line("op_phmadh(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Pmsubh: line("op_pmsubh(ctx, %d, %d, %d);", rd, rs, rt); break;
+    case Op::Phmsbh: line("op_phmsbh(ctx, %d, %d, %d);", rd, rs, rt); break;
     // --- COP0 ---
     case Op::Mfc0: if (rt) line("set32(ctx, %d, ctx.cop0[%d]);", rt, rd); break;
     case Op::Mtc0: line("ctx.cop0[%d] = gpr32(ctx, %d);", rd, rt); break;

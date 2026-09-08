@@ -23,12 +23,16 @@ M0–M3 are done and tested. What exists today:
   PS2Recomp-compatible TOML export
 - `ee::codegen` — C++ code generator: core MIPS, FPU, a large MMI subset,
   delay slots, branch-likely, jump tables, calls, stubs/skips/patches
-- `ee::runtime` — guest memory (32 MB RDRAM + scratchpad), dispatch, syscall/stub
-  plumbing, mult/div + unaligned-access + MMI helpers
+- `ee::runtime` — guest memory (32 MB RDRAM + scratchpad, MMIO hooks), dispatch,
+  full MMI helper set (PCSX2-verified semantics incl. hardware errata), kernel HLE:
+  syscall dispatch (ps2sdk numbering), cooperative thread scheduler with
+  priorities, semaphores, EE STDOUT console, `_print`
 - CLIs: `ee-disasm`, `ee-analyze`, `ee-recomp`
 
 The pipeline is verified end-to-end: analyze an ELF, recompile to C++, compile
-against the runtime, and execute natively (see tests + `docs/PLAN.md`).
+against the runtime, and execute natively — including a threaded "homebrew" that
+creates a thread, synchronizes via semaphore, prints over the EE STDOUT MMIO
+register, and exits through the kernel (see tests + `docs/PLAN.md`).
 
 See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [docs/INTEGRATION.md](docs/INTEGRATION.md)
 for Aura / Ghidra / PS2Recomp interop.

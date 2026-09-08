@@ -126,13 +126,72 @@ int main() {
     ctx.r[1] = a;
     op_psllw(ctx, 3, 1, 4);
     CHECK(ctx.r[3].lo == 0x0000002000000010ull);
-    // pmfhl.lw / slw
-    ctx.lo.lo = 0xAABBCCDD;
-    ctx.hi.lo = 0x11223344;
+    // pmfhl.lw: rd = {LO.w0, HI.w0, LO.w2, HI.w2} (PCSX2-verified)
+    ctx.lo = {0xAAAAAAAAAAAAAAAAull, 0xBBBBBBBBBBBBBBBBull};
+    ctx.hi = {0xCCCCCCCCCCCCCCCCull, 0xDDDDDDDDDDDDDDDDull};
     op_pmfhl(ctx, 7, 0);
-    CHECK(ctx.r[7].lo == 0xAABBCCDD && ctx.r[7].hi == 0);
+    CHECK(ctx.r[7].lo == 0xCCCCCCCCAAAAAAAAull);
+    CHECK(ctx.r[7].hi == 0xDDDDDDDDBBBBBBBBull);
+    // pmfhl.slw: clamp {HI.w, LO.w} pairs to s32
+    ctx.lo = {0xAABBCCDDull, 0};
+    ctx.hi = {0x11223344ull, 0};
     op_pmfhl(ctx, 7, 2);
-    CHECK(ctx.r[7].lo == 0xAABBCCDD && ctx.r[7].hi == 0x11223344);
+    CHECK(ctx.r[7].lo == 0x000000007FFFFFFFull); // clamped to INT32_MAX
+    CHECK(ctx.r[7].hi == 0);
+    // pmthl.lw: LO.w0=rs.w0, HI.w0=rs.w1, LO.w2=rs.w2, HI.w2=rs.w3
+    ctx.r[8] = {0x1111111111111111ull, 0x2222222222222222ull};
+    ctx.lo = {};
+    ctx.hi = {};
+    op_pmthl(ctx, 8, 0);
+    CHECK(ctx.lo.lo == 0x0000000011111111ull && ctx.hi.lo == 0x0000000011111111ull);
+    CHECK(ctx.lo.hi == 0x0000000022222222ull && ctx.hi.hi == 0x0000000022222222ull);
+    // ppacw: {rt.w0, rt.w2, rs.w0, rs.w2}
+    ctx.r[1] = {0x0000000200000001ull, 0x0000000400000003ull}; // rs words 1,2,3,4
+    ctx.r[2] = {0x0000000600000005ull, 0x0000000800000007ull}; // rt words 5,6,7,8
+    op_ppacw(ctx, 3, 1, 2);
+    CHECK(ctx.r[3].lo == 0x0000000700000005ull);
+    CHECK(ctx.r[3].hi == 0x0000000300000001ull);
+    // pcpyh: broadcast h0 -> h0..3, h4 -> h4..7
+    ctx.r[1] = {0x0004000300020001ull, 0x0008000700060005ull};
+    op_pcpyh(ctx, 3, 1);
+    CHECK(ctx.r[3].lo == 0x0001000100010001ull);
+    CHECK(ctx.r[3].hi == 0x0005000500050005ull);
+    // pext5: 1-5-5-5 -> 8-8-8-8 expansion
+    ctx.r[1] = {0x000000000000FFFFull, 0};
+    op_pext5(ctx, 3, 1);
+    CHECK(ctx.r[3].lo == 0x0000000080F8F8F8ull);
+    // qfsrv: 256-bit funnel right shift by sa bytes
+    ctx.sa = 1;
+    ctx.r[1] = {0x0011223344556677ull, 0x8899AABBCCDDEEFFull}; // rs
+    ctx.r[2] = {0x0123456789ABCDEFull, 0xFEDCBA9876543210ull}; // rt
+    op_qfsrv(ctx, 3, 1, 2);
+    CHECK(ctx.r[3].lo == 0x100123456789ABCDull);
+    CHECK(ctx.r[3].hi == 0x77FEDCBA98765432ull);
+    // pmaddw (no errata-fudge path): products 2*4 and 3*5
+    ctx.lo = {};
+    ctx.hi = {};
+    ctx.r[1] = {2, 3};
+    ctx.r[2] = {4, 5};
+    op_pmaddw(ctx, 3, 1, 2);
+    CHECK(s64(ctx.lo.lo) == 8 && s64(ctx.hi.lo) == 0);
+    CHECK(s64(ctx.lo.hi) == 15 && s64(ctx.hi.hi) == 0);
+    CHECK(ctx.r[3].lo == 8 && ctx.r[3].hi == 15);
+    // pdivw: 7/2 and 9/4
+    ctx.r[1] = {7, 9};
+    ctx.r[2] = {2, 4};
+    op_pdivw(ctx, 0, 1, 2);
+    CHECK(s64(ctx.lo.lo) == 3 && s64(ctx.hi.lo) == 1);
+    CHECK(s64(ctx.lo.hi) == 2 && s64(ctx.hi.hi) == 1);
+    // pabsw with INT32_MIN clamp
+    ctx.r[1] = {0x0000000180000000ull, 0};
+    op_pabsw(ctx, 3, 1);
+    CHECK(ctx.r[3].lo == 0x000000017FFFFFFFull);
+    // psllvw: 32-bit lanes, sign-extended results
+    ctx.r[1] = {0xFFFFFFF0ull, 0x00000002ull};
+    ctx.r[2] = {4, 1};
+    op_psllvw(ctx, 3, 1, 2);
+    CHECK(ctx.r[3].lo == 0xFFFFFFFFFFFFFF00ull);
+    CHECK(ctx.r[3].hi == 4);
 
     // ELF loading into guest memory (fixture).
     {

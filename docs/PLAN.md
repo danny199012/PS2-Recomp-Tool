@@ -89,7 +89,7 @@ app/             SDL3 launcher                                  [M6+]
 - **M1** Full R5900 decode audit vs EE manual/binutils; operand-format polish; VU0 macro operands
 - **M2** `ee-analyze`: function discovery, jump tables, TOML output (PS2Recomp schema)
 - **M3** `ee-recomp`: C++ codegen (integer core) + runtime skeleton (memory, dispatch)
-- **M4** FPU + MMI codegen; kernel HLE (threads/semas/interrupts); first homebrew runs
+- **M4** FPU + MMI codegen; kernel HLE (threads/semas/syscalls, EE STDOUT MMIO); first homebrew runs  [done: threaded homebrew verified end-to-end]
 - **M5** DMA/VIF/GIF pipeline; VU0 macro codegen
 - **M6** GS (null → software); SDL3 app shell; first visible homebrew graphics
 - **M7** VU1 microcode interpreter (standalone lib — prime PS2Recomp contribution)

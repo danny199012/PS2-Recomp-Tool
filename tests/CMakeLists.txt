@@ -19,3 +19,7 @@ add_test(NAME codegen COMMAND test_codegen)
 add_executable(test_runtime test_runtime.cpp)
 target_link_libraries(test_runtime PRIVATE ee::runtime)
 add_test(NAME runtime COMMAND test_runtime)
+
+add_executable(test_kernel test_kernel.cpp)
+target_link_libraries(test_kernel PRIVATE ee::runtime)
+add_test(NAME kernel COMMAND test_kernel)
