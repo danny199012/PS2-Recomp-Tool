@@ -349,7 +349,7 @@ int run_gui(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
-    ImGui_ImplSDL3_InitForWindow(window);
+    ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
 
     GuiState g;
@@ -377,7 +377,7 @@ int run_gui(int argc, char** argv) {
             if (ev.type == SDL_EVENT_QUIT) quit = true;
             else if (ev.type == SDL_EVENT_DROP_FILE && ev.drop.data) {
                 g.disc_input = ev.drop.data;
-                SDL_free(ev.drop.data);
+                SDL_free(const_cast<char*>(ev.drop.data));
                 if (open_disc(g.disc, g.disc_input)) {
                     save_boot_elf(g.disc, data_dir(argv[0]));
                     g.status = "Disc opened: " + g.disc.boot_elf;
@@ -399,8 +399,11 @@ int run_gui(int argc, char** argv) {
             ImGui::TextWrapped("Please select a legally obtained dump of the game disc "
                                "(.iso or .bin image) to begin:");
             ImGui::Separator();
+            static char disc_buf[1024] = {};
+            std::snprintf(disc_buf, sizeof(disc_buf), "%s", g.disc_input.c_str());
             ImGui::SetNextItemWidth(-1.0f);
-            ImGui::InputText("##disc", &g.disc_input);
+            ImGui::InputText("##disc", disc_buf, sizeof(disc_buf));
+            g.disc_input = disc_buf;
             if (ImGui::Button("Open disc image")) {
                 if (open_disc(g.disc, g.disc_input)) {
                     save_boot_elf(g.disc, data_dir(argv[0]));

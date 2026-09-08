@@ -12,6 +12,7 @@
 #include <ee/gs_renderer.hpp>
 #include <ee/hw.hpp>
 #include <ee/iop.hpp>
+#include <ee/r5900.hpp>
 #include <ee/runtime.hpp>
 
 #include <SDL3/SDL.h>
@@ -22,15 +23,18 @@
 #include "imgui_impl_sdlrenderer3.h"
 #endif
 
+#include <cctype>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
-#include <dirent.h>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
-#include <sys/stat.h>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 void register_functions(ee::rt::Runtime& rt);
 
@@ -44,37 +48,29 @@ struct GameEntry {
 
 std::vector<GameEntry> scan_directory(const std::string& dir) {
     std::vector<GameEntry> games;
-    DIR* d = opendir(dir.c_str());
-    if (!d) return games;
-    struct dirent* ent;
-    while ((ent = readdir(d)) != nullptr) {
-        std::string name = ent->d_name;
-        if (name[0] == '.') continue;
-        std::string full = dir + "/" + name;
-        struct stat st;
-        if (stat(full.c_str(), &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) {
-            auto sub = scan_directory(full);
-            for (auto& g : sub) {
-                g.name = name + "/" + g.name;
-                games.push_back(std::move(g));
-            }
-        } else {
-            auto lower = name;
-            for (auto& c : lower) c = char(tolower(c));
-            bool is_elf = lower.size() > 4 && lower.substr(lower.size() - 4) == ".elf";
-            bool is_iso = lower.size() > 4 &&
-                         (lower.substr(lower.size() - 4) == ".iso" ||
-                          lower.substr(lower.size() - 4) == ".bin");
-            if (!is_elf && !is_iso) continue;
-            GameEntry g;
-            g.name = name;
-            g.path = full;
-            g.is_iso = is_iso;
-            games.push_back(std::move(g));
-        }
+    std::error_code ec;
+    fs::recursive_directory_iterator it(fs::path(dir),
+                                        fs::directory_options::skip_permission_denied, ec);
+    if (ec) return games;
+    fs::recursive_directory_iterator end;
+    for (; it != end; it.increment(ec)) {
+        std::error_code lec;
+        if (it->is_directory(lec)) continue;
+        const std::string name = it->path().filename().string();
+        if (name.empty() || name[0] == '.') continue;
+        std::string lower = name;
+        for (auto& c : lower) c = char(std::tolower((unsigned char)c));
+        const bool is_elf = lower.size() > 4 && lower.substr(lower.size() - 4) == ".elf";
+        const bool is_iso = lower.size() > 4 &&
+                            (lower.substr(lower.size() - 4) == ".iso" ||
+                             lower.substr(lower.size() - 4) == ".bin");
+        if (!is_elf && !is_iso) continue;
+        GameEntry g;
+        g.name = fs::relative(it->path(), fs::path(dir), ec).generic_string();
+        g.path = it->path().string();
+        g.is_iso = is_iso;
+        games.push_back(std::move(g));
     }
-    closedir(d);
     return games;
 }
 
@@ -94,7 +90,7 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
-    ImGui_ImplSDL3_InitForWindow(window);
+    ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
 #endif
 
