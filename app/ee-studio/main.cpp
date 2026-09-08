@@ -16,6 +16,8 @@
 #include <ee/runtime.hpp>
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_dialog.h>
+#include <SDL3/SDL_version.h>
 
 #ifdef EE_HAS_IMGUI
 #include "imgui.h"
@@ -30,6 +32,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -74,6 +77,69 @@ std::vector<GameEntry> scan_directory(const std::string& dir) {
     return games;
 }
 
+#ifdef EE_HAS_IMGUI
+// Native SDL3 file/folder dialogs + a larger UI font (ee-studio helpers).
+
+struct DialogResult {
+    std::mutex mx;
+    std::string path;
+    bool has = false;
+};
+
+void on_dialog_result(void* userdata, const char* const* filelist, int /*filter*/) {
+    auto* res = static_cast<DialogResult*>(userdata);
+    if (!filelist || !filelist[0]) return;
+    std::lock_guard<std::mutex> lk(res->mx);
+    res->path = filelist[0];
+    res->has = true;
+}
+
+void pick_folder(DialogResult& res, SDL_Window* w) {
+#if SDL_VERSION_ATLEAST(3, 2, 0)
+    SDL_ShowFolderPickerDialog(on_dialog_result, &res, w, nullptr, false);
+#else
+    (void)res;
+    (void)w;
+#endif
+}
+
+void pick_game_file(DialogResult& res, SDL_Window* w) {
+#if SDL_VERSION_ATLEAST(3, 2, 0)
+    static const SDL_DialogFileFilter filters[] = {
+        {"PS2 executables", "*.elf"},
+        {"Disc images", "*.iso;*.bin"},
+        {"All files", "*"},
+    };
+    SDL_ShowOpenFileDialog(on_dialog_result, &res, w, filters, 3, nullptr, false);
+#else
+    (void)res;
+    (void)w;
+#endif
+}
+
+// Larger UI font: prefer a real TTF at a bigger point size, else scale the
+// default font. Called once after ImGui::CreateContext().
+void enlarge_ui_font(ImGuiIO& io) {
+    const char* candidates[] = {
+#ifdef _WIN32
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+#else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+#endif
+    };
+    for (const char* f : candidates) {
+        std::FILE* fp = std::fopen(f, "rb");
+        if (!fp) continue;
+        std::fclose(fp);
+        io.Fonts->AddFontFromFileTTF(f, 24.0f);
+        return;
+    }
+    io.FontGlobalScale = 1.6f; // no font file found: scale the built-in font
+}
+#endif // EE_HAS_IMGUI
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -90,6 +156,7 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ImGui::StyleColorsDark();
+    enlarge_ui_font(io);
     ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
     ImGui_ImplSDLRenderer3_Init(renderer);
 #endif
@@ -102,6 +169,11 @@ int main(int argc, char** argv) {
     bool show_disasm = false;
     bool show_console = true;
     std::string status_msg = "Ready. Scan a directory to find games.";
+#ifdef EE_HAS_IMGUI
+    DialogResult dialog_res;
+    bool want_folder = false;
+    bool want_file = false;
+#endif
 
     auto log_msg = [&](const char* fmt, ...) {
         char buf[1024];
@@ -131,6 +203,46 @@ int main(int argc, char** argv) {
             ImGui_ImplSDL3_ProcessEvent(&event);
 #endif
         }
+#ifdef EE_HAS_IMGUI
+        // Native SDL3 file/folder dialogs: results arrive async in the callback.
+        if (want_folder) { want_folder = false; pick_folder(dialog_res, window); }
+        if (want_file)   { want_file = false;   pick_game_file(dialog_res, window); }
+        {
+            std::string picked;
+            {
+                std::lock_guard<std::mutex> lk(dialog_res.mx);
+                if (dialog_res.has) { picked = dialog_res.path; dialog_res.has = false; }
+            }
+            if (!picked.empty()) {
+                std::error_code ec;
+                if (fs::is_directory(picked, ec)) {
+                    games_dir = picked;
+                    games = scan_directory(games_dir);
+                    status_msg = "Scanned " + std::to_string(games.size()) +
+                                 " game(s) in " + picked;
+                } else {
+                    std::string lower = picked;
+                    for (auto& c : lower) c = char(std::tolower((unsigned char)c));
+                    const bool is_elf = lower.size() > 4 &&
+                                        lower.substr(lower.size() - 4) == ".elf";
+                    const bool is_iso = lower.size() > 4 &&
+                                        (lower.substr(lower.size() - 4) == ".iso" ||
+                                         lower.substr(lower.size() - 4) == ".bin");
+                    if (is_elf || is_iso) {
+                        GameEntry g;
+                        g.name = fs::path(picked).filename().string();
+                        g.path = picked;
+                        g.is_iso = is_iso;
+                        games.insert(games.begin(), std::move(g));
+                        selected_game = 0;
+                        status_msg = "Added " + g.name;
+                    } else {
+                        status_msg = "Unsupported file: " + picked;
+                    }
+                }
+            }
+        }
+#endif
         SDL_RenderClear(renderer);
 
 #ifdef EE_HAS_IMGUI
@@ -141,6 +253,8 @@ int main(int argc, char** argv) {
         // Menu Bar
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
+                if (ImGui::MenuItem("Open Directory...")) want_folder = true;
+                if (ImGui::MenuItem("Open Game...")) want_file = true;
                 if (ImGui::MenuItem("Quit")) quit = true;
                 ImGui::EndMenu();
             }
@@ -159,6 +273,8 @@ int main(int argc, char** argv) {
             games = scan_directory(games_dir);
             status_msg = "Scanned " + std::to_string(games.size()) + " game(s)";
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Browse...")) want_folder = true;
         ImGui::Separator();
         if (games.empty()) {
             ImGui::TextDisabled("No games found. Scan a directory.");
