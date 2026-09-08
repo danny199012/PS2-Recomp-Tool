@@ -14,6 +14,7 @@ option(EE_BUILD_TOOLS "Build command-line tools" ON)
 option(EE_BUILD_TESTS "Build unit tests" ON)
 option(EE_BUILD_STUDIO "Build the ee-studio launcher GUI" ON)
 option(EE_BUILD_LAUNCHER "Build the per-game release launcher template" ON)
+option(EE_BUILD_ETOOLS "Build the ee-tools GUI (disasm/analyze/recomp)" ON)
 
 if(MSVC)
   add_compile_options(/W4 /permissive- /utf-8 /wd4100 /wd4189)
@@ -40,6 +41,10 @@ endif()
 
 if(EE_BUILD_LAUNCHER)
   add_subdirectory(app/game-launcher)
+endif()
+
+if(EE_BUILD_ETOOLS)
+  add_subdirectory(app/ee-tools)
 endif()
 
 if(EE_BUILD_TESTS)

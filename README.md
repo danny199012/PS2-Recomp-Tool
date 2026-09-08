@@ -43,11 +43,12 @@ The core pipeline and a growing runtime are implemented. What exists today:
   readback, plus PSM_CT32 VRAM swizzle helpers
 - `ee::game_overrides` --- per-game override/profile system (match by ELF name +
   CRC32, bind addresses to stub handlers, `EE_REGISTER_GAME_OVERRIDE`)
-- CLIs + GUI: `ee-disasm`, `ee-analyze`, `ee-recomp`, plus two apps —
-  `ee-studio` (SDL3 + optional Dear ImGui developer GUI: game library, ISO boot
-  detection, analyze/recompile, disassembly view) and `app/game-launcher`
-  (per-game **release** launcher template: disc-prompt GUI -> extract boot ELF ->
-  run; see `docs/LAUNCHER.md`)
+- CLIs + GUI: `ee-disasm`, `ee-analyze`, `ee-recomp`, plus three apps —
+  `ee-tools` (SDL3 + Dear ImGui GUI for all three tools: ELF info,
+  disassemble, analyze, recompile), `ee-studio` (developer GUI: game library,
+  ISO boot detection, analyze/recompile, disassembly view), and
+  `app/game-launcher` (per-game **release** launcher template: disc-prompt
+  GUI -> extract boot ELF -> run; see `docs/LAUNCHER.md`)
 
 The pipeline is verified end-to-end: analyze an ELF, recompile to C++, compile
 against the runtime, and execute natively — including a threaded "homebrew" that
@@ -99,10 +100,12 @@ libs/codegen    C++ code generator
 runtime/        runtime for recompiled code (memory, dispatch, devices, helpers)
                 incl. kernel HLE, HW (DMA/VIF/GIF/GS), VU0 macro + VU microcode,
                 IOP HLE, CDVD ISO reader, GS renderer, game overrides
-app/ee-studio   SDL3 (+ optional Dear ImGui) developer GUI: game library, ISO
-                boot detection, analyze / recompile / run, disassembly view
+app/ee-tools     SDL3 + Dear ImGui GUI for the toolchain: ELF info, disassemble,
+                 analyze (imports + TOML/CSV/JSON export), recompile (TOML config)
+app/ee-studio    SDL3 (+ optional Dear ImGui) developer GUI: game library, ISO
+                 boot detection, analyze / recompile / run, disassembly view
 app/game-launcher per-game release launcher template: disc-prompt GUI -> extract
-                boot ELF -> run (see docs/LAUNCHER.md)
+                 boot ELF -> run (see docs/LAUNCHER.md)
 tools/          ee-disasm, ee-analyze, ee-recomp (CLIs)
 tests/          unit tests (no framework, plain asserts)
 docs/           PLAN.md (roadmap), INTEGRATION.md (Aura/Ghidra/PS2Recomp)
