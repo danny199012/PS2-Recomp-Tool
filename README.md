@@ -13,14 +13,25 @@ complement [PS2Recomp](https://github.com/ran-j/PS2Recomp) (see below).
 
 ## Status
 
-Early development. What exists today:
+M0–M3 are done and tested. What exists today:
 
 - `ee::elf` — dependency-free ELF32 parser for PS2 executables (sections, segments, symbols)
 - `ee::r5900` — table-driven R5900 decoder + disassembler: core MIPS, MMI (MMI0–MMI3),
   COP0, COP1 (FPU), COP2 (VU0 macro mode, SPECIAL1/SPECIAL2 tables)
-- `ee-disasm` — CLI that dumps ELF info and disassembles executable sections
+- `ee::analysis` — function discovery (symbols, recursive descent, jump-table
+  resolution, prologue scan) with CSV/JSON import (Aura / Ghidra) and
+  PS2Recomp-compatible TOML export
+- `ee::codegen` — C++ code generator: core MIPS, FPU, a large MMI subset,
+  delay slots, branch-likely, jump tables, calls, stubs/skips/patches
+- `ee::runtime` — guest memory (32 MB RDRAM + scratchpad), dispatch, syscall/stub
+  plumbing, mult/div + unaligned-access + MMI helpers
+- CLIs: `ee-disasm`, `ee-analyze`, `ee-recomp`
 
-See [docs/PLAN.md](docs/PLAN.md) for the full architecture and milestone roadmap.
+The pipeline is verified end-to-end: analyze an ELF, recompile to C++, compile
+against the runtime, and execute natively (see tests + `docs/PLAN.md`).
+
+See [docs/PLAN.md](docs/PLAN.md) for the roadmap and [docs/INTEGRATION.md](docs/INTEGRATION.md)
+for Aura / Ghidra / PS2Recomp interop.
 
 ## Building
 
@@ -46,21 +57,27 @@ CI builds and tests both platforms on every push (see `.github/workflows/ci.yml`
 ## Usage
 
 ```
-ee-disasm <file.elf> [--section .text] [--start 0xADDR --end 0xADDR] [--no-disasm]
+ee-disasm  <file.elf> [--section .text] [--start 0xADDR --end 0xADDR] [--no-disasm]
+ee-analyze <file.elf> [--import funcs.csv|.json] [--toml out.toml] [--csv out.csv] [--json out.json]
+ee-recomp  <file.elf> [--config game.toml] [--import funcs.csv|.json] [--out game.recomp.cpp]
 ```
 
-Prints ELF header/section/symbol information and disassembles executable sections,
-using symbols as labels when present.
+Typical flow: `ee-analyze` to discover functions and emit a config skeleton,
+edit the TOML (stubs/skip/patches), then `ee-recomp` to generate C++, then
+compile the output together with `runtime/`.
 
 ## Repository layout
 
 ```
-libs/ee-base    common types (header-only)
+libs/ee-base    common types + text/JSON/TOML helpers (header-only)
 libs/elf        ELF32 loader
 libs/r5900      R5900 instruction decoder + disassembler
-tools/ee-disasm disassembler CLI
+libs/analysis   function discovery + interchange formats
+libs/codegen    C++ code generator
+runtime/        runtime for recompiled code (memory, dispatch, helpers)
+tools/          ee-disasm, ee-analyze, ee-recomp
 tests/          unit tests (no framework, plain asserts)
-docs/PLAN.md    architecture + roadmap
+docs/           PLAN.md (roadmap), INTEGRATION.md (Aura/Ghidra/PS2Recomp)
 ```
 
 ## Relationship to PS2Recomp

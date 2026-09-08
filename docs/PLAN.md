@@ -103,6 +103,17 @@ app/             SDL3 launcher                                  [M6+]
 - No external deps for core libs (ELF parser written in-house; no fmt — `snprintf`).
 - CI: GitHub Actions, `ubuntu-latest` (GCC + Clang) + `windows-latest` (MSVC).
 
+## GUI / runner app (planned, after M5/M6)
+
+Working name: `ee-studio` (like ps2xStudio). Stack: Dear ImGui + SDL3 (same
+C++ toolchain, builds on Windows/Linux).
+
+- Game library: point at directories; scan for `.elf` (later `.iso` via a CDVD
+  reader); each game gets a project folder with its config TOML + imports.
+- Pipeline view: analyze -> configure (stub/skip editor) -> recompile -> build
+  -> run, with logs and the unimplemented-instruction report surfaced.
+- Disassembly view backed by `ee::r5900`; import Aura projects / Ghidra CSVs.
+
 ## Open questions
 
 - Project name: "EERecomp" is a placeholder.
