@@ -589,8 +589,13 @@ void Hw::mmio_write(u32 addr, u64 value, u32 size) {
     (void)size;
     // EE STDOUT (sio / debug console)
     if (addr == 0x1000F180) {
-        std::putchar(char(value & 0xFF));
-        std::fflush(stdout);
+        const char c = char(value & 0xFF);
+        if (runtime && runtime->console)
+            runtime->console(&c, 1);
+        else {
+            std::putchar(c);
+            std::fflush(stdout);
+        }
         return;
     }
     // DMAC (may kick a channel)

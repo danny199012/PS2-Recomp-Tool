@@ -13,7 +13,7 @@ complement [PS2Recomp](https://github.com/ran-j/PS2Recomp) (see below).
 
 ## Status
 
-M0–M3 are done and tested. What exists today:
+The core pipeline and a growing runtime are implemented. What exists today:
 
 - `ee::elf` — dependency-free ELF32 parser for PS2 executables (sections, segments, symbols)
 - `ee::r5900` — table-driven R5900 decoder + disassembler: core MIPS, MMI (MMI0–MMI3),
@@ -33,7 +33,21 @@ M0–M3 are done and tested. What exists today:
 - `ee::vu` --- VU0 macro-mode (COP2): full arithmetic (add/sub/mul/max/min/madd/
   msub with broadcast, Q/I sources, accumulator), conversions (itof/ftoi), integer
   ops, moves, divide/sqrt/rsqrt, MAC/status flags (PCSX2-verified), clip
-- CLIs: `ee-disasm`, `ee-analyze`, `ee-recomp`
+- `ee::vu1` --- VU microcode interpreter (VU0/VU1): runs microprograms uploaded via
+  VIF `MPG` (MSCAL), 64-bit upper/lower instruction pairs, vf/vi/acc/Q/P/I/R state
+- `ee::iop` --- IOP HLE: SIF (SIF0/SIF1/SIF2 DMA), CDVD, pad, memory card, SPU2
+  stub, RPC service table
+- `ee::cdvd` --- ISO-based disc drive: opens `.iso`/`.bin` (ISO9660 + basic UDF),
+  raw sector reads, SYSTEM.CNF / boot-ELF discovery, on-disc file reads
+- `ee::gs_renderer` / `ee::gs_swizzle` --- software GS rasterizer with framebuffer
+  readback, plus PSM_CT32 VRAM swizzle helpers
+- `ee::game_overrides` --- per-game override/profile system (match by ELF name +
+  CRC32, bind addresses to stub handlers, `EE_REGISTER_GAME_OVERRIDE`)
+- CLIs + GUI: `ee-disasm`, `ee-analyze`, `ee-recomp`, plus two apps —
+  `ee-studio` (SDL3 + optional Dear ImGui developer GUI: game library, ISO boot
+  detection, analyze/recompile, disassembly view) and `app/game-launcher`
+  (per-game **release** launcher template: disc-prompt GUI -> extract boot ELF ->
+  run; see `docs/LAUNCHER.md`)
 
 The pipeline is verified end-to-end: analyze an ELF, recompile to C++, compile
 against the runtime, and execute natively — including a threaded "homebrew" that
@@ -62,8 +76,6 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-CI builds and tests both platforms on every push (see `.github/workflows/ci.yml`).
-
 ## Usage
 
 ```
@@ -84,10 +96,17 @@ libs/elf        ELF32 loader
 libs/r5900      R5900 instruction decoder + disassembler
 libs/analysis   function discovery + interchange formats
 libs/codegen    C++ code generator
-runtime/        runtime for recompiled code (memory, dispatch, helpers)
-tools/          ee-disasm, ee-analyze, ee-recomp
+runtime/        runtime for recompiled code (memory, dispatch, devices, helpers)
+                incl. kernel HLE, HW (DMA/VIF/GIF/GS), VU0 macro + VU microcode,
+                IOP HLE, CDVD ISO reader, GS renderer, game overrides
+app/ee-studio   SDL3 (+ optional Dear ImGui) developer GUI: game library, ISO
+                boot detection, analyze / recompile / run, disassembly view
+app/game-launcher per-game release launcher template: disc-prompt GUI -> extract
+                boot ELF -> run (see docs/LAUNCHER.md)
+tools/          ee-disasm, ee-analyze, ee-recomp (CLIs)
 tests/          unit tests (no framework, plain asserts)
 docs/           PLAN.md (roadmap), INTEGRATION.md (Aura/Ghidra/PS2Recomp)
+libs/vu         (future: standalone VU micro-mode decoder)
 ```
 
 ## Relationship to PS2Recomp

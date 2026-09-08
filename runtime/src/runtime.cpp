@@ -13,6 +13,7 @@ Runtime::Runtime() {
     kernel = std::make_unique<Kernel>(*this);
     hw = std::make_unique<Hw>();
     hw->mem = &mem;
+    hw->runtime = this;
     mem.mmio_user = hw.get();
     mem.mmio_read = [](u32 addr, u32 size, void* user) {
         return static_cast<Hw*>(user)->mmio_read(addr, size);

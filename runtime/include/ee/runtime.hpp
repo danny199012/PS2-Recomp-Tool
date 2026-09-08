@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -64,6 +65,11 @@ struct Runtime {
     std::unordered_map<std::string, StubHandler> stubs;
     std::unique_ptr<Kernel> kernel; // syscall HLE + scheduler
     std::unique_ptr<Hw> hw;         // DMAC/VIF/GIF/GS + VU memories + MMIO
+
+    // Optional sink for guest console output (EE STDOUT MMIO + `_print` syscall).
+    // When null (default), output goes to the host's stdout. Launchers set this
+    // to surface guest output in a GUI console.
+    std::function<void(const char* data, size_t size)> console;
 
     Runtime();
     ~Runtime(); // joins kernel threads

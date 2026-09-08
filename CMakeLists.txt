@@ -12,6 +12,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(EE_BUILD_TOOLS "Build command-line tools" ON)
 option(EE_BUILD_TESTS "Build unit tests" ON)
+option(EE_BUILD_STUDIO "Build the ee-studio launcher GUI" ON)
+option(EE_BUILD_LAUNCHER "Build the per-game release launcher template" ON)
 
 if(MSVC)
   add_compile_options(/W4 /permissive- /utf-8 /wd4100 /wd4189)
@@ -32,11 +34,15 @@ if(EE_BUILD_TOOLS)
   add_subdirectory(tools/ee-recomp)
 endif()
 
+if(EE_BUILD_STUDIO)
+  add_subdirectory(app/ee-studio)
+endif()
+
+if(EE_BUILD_LAUNCHER)
+  add_subdirectory(app/game-launcher)
+endif()
+
 if(EE_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
-
-if(EE_BUILD_TOOLS)
-  add_subdirectory(app/ee-studio)
-endif()
 endif()

@@ -19,6 +19,7 @@
 namespace ee::rt {
 
 struct Memory; // defined in runtime.hpp
+struct Runtime; // defined in runtime.hpp
 class Hw;
 
 // --- GS (Graphics Synthesizer): register file + 4 MB VRAM ----------------------
@@ -120,6 +121,7 @@ private:
 class Hw {
 public:
     Memory* mem = nullptr; // guest memory (set by Runtime)
+    Runtime* runtime = nullptr; // set by Runtime ctor (used for the console sink)
 
     Gs gs;
     Gif gif;

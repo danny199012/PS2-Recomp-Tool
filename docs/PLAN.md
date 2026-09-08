@@ -37,20 +37,23 @@ Windows/Linux ports. This document is the living plan; update it as decisions la
 ## Code layout (target)
 
 ```
-libs/ee-base     common types                                   [done]
+libs/ee-base     common types + text/JSON/TOML helpers          [done]
 libs/elf         ELF32 loader                                   [done]
-libs/r5900       R5900 decoder + disassembler                   [done: decode/disasm]
-libs/vu          VU0/VU1 micro-mode ISA decode/disasm           [M7]
-libs/ir          optional IR for analysis/optimization          [M3+]
+libs/r5900       R5900 decoder + disassembler + VU0 macro ops   [done]
+libs/analysis    function discovery + interchange formats       [done]
+libs/codegen     C++ code generator                             [done]
+libs/vu          VU0/VU1 micro-mode ISA standalone lib          [future]
 tools/ee-disasm  disassembler CLI                               [done]
-tools/ee-analyze function discovery -> TOML (PS2Recomp schema)  [M2]
-tools/ee-recomp  ELF + TOML -> C++ codegen                      [M3]
-runtime/core     guest memory, dispatch, kernel HLE             [M3-M4]
-runtime/hw       DMA, VIF, GIF, timers, IPU                     [M5]
-runtime/gs       GS device (null/sw/Vulkan)                     [M6]
-runtime/vu       VU interpreter                                 [M7]
-runtime/iop      SIF/CDVD/pad/MC HLE                            [M8]
-app/             SDL3 launcher                                  [M6+]
+tools/ee-analyze function discovery -> TOML (PS2Recomp schema)  [done]
+tools/ee-recomp  ELF + TOML -> C++ codegen                      [done]
+runtime/core     guest memory, dispatch, kernel HLE, MMI        [done]
+runtime/hw       DMA, VIF, GIF, GS regs + VRAM, VU memories     [done: subset]
+runtime/gs       GS device + software renderer + readback       [partial]
+runtime/vu       VU0 macro codegen + VU0/VU1 micro interpreter  [micro: done]
+runtime/iop      SIF/CDVD/pad/MC/SPU2 HLE + RPC services        [partial: HLE stubs]
+runtime/cdvd     ISO9660/UDF disc reader (boot ELF, files)      [done]
+app/ee-studio    SDL3 (+ ImGui) studio GUI                      [skeleton]
+app/game-launcher per-game release launcher (disc prompt GUI)   [in progress]
 ```
 
 ## Recompiler design (M3 preview)
@@ -85,16 +88,17 @@ app/             SDL3 launcher                                  [M6+]
 
 ## Milestones
 
-- **M0** Skeleton: CMake, CI (Win+Linux), ELF loader, decoder core, disasm CLI  ← here
-- **M1** Full R5900 decode audit vs EE manual/binutils; operand-format polish; VU0 macro operands
-- **M2** `ee-analyze`: function discovery, jump tables, TOML output (PS2Recomp schema)
-- **M3** `ee-recomp`: C++ codegen (integer core) + runtime skeleton (memory, dispatch)
+- **M0** Skeleton: CMake, CI (Win+Linux), ELF loader, decoder core, disasm CLI  [done]
+- **M1** Full R5900 decode audit vs EE manual/binutils; operand-format polish; VU0 macro operands  [done]
+- **M2** `ee-analyze`: function discovery, jump tables, TOML output (PS2Recomp schema)  [done]
+- **M3** `ee-recomp`: C++ codegen (integer core) + runtime skeleton (memory, dispatch)  [done]
 - **M4** FPU + MMI codegen; kernel HLE (threads/semas/syscalls, EE STDOUT MMIO); first homebrew runs  [done: threaded homebrew verified end-to-end]
-- **M5** DMA/VIF/GIF pipeline; VU0 macro codegen
-- **M6** GS (null → software); SDL3 app shell; first visible homebrew graphics
-- **M7** VU1 microcode interpreter (standalone lib — prime PS2Recomp contribution)
-- **M8** IOP HLE: SIF, CDVD, pad, memory card
-- **M9** First commercial game boots; per-game override/profile system
+- **M5** DMA/VIF/GIF pipeline; VU0 macro codegen  [done: DMA/VIF/GIF subset + VU0 macro]
+- **M6** GS (null → software); SDL3 app shell; first visible homebrew graphics  [partial: software renderer + framebuffer readback, ee-studio shell; Vulkan + visible graphics still open]
+- **M7** VU1 microcode interpreter (standalone lib — prime PS2Recomp contribution)  [done: VU0/VU1 micro interpreter]
+- **M8** IOP HLE: SIF, CDVD, pad, memory card  [partial: SIF/CDVD/pad/MC/SPU2 stubs + RPC table]
+- **M9** First commercial game boots; per-game override/profile system  [partial: override registry + address binding exist; no full commercial title yet]
+- **M10** Per-game launcher releases: disc-prompt GUI, boot-ELF/asset extraction, one shippable .exe per title  [in progress: app/game-launcher template]
 
 ## Decisions log
 
@@ -103,16 +107,23 @@ app/             SDL3 launcher                                  [M6+]
 - No external deps for core libs (ELF parser written in-house; no fmt — `snprintf`).
 - CI: GitHub Actions, `ubuntu-latest` (GCC + Clang) + `windows-latest` (MSVC).
 
-## GUI / runner app (planned, after M5/M6)
+## Launcher apps
 
-Working name: `ee-studio` (like ps2xStudio). Stack: Dear ImGui + SDL3 (same
-C++ toolchain, builds on Windows/Linux).
+Two launchers share the ImGui + SDL3 stack (same C++ toolchain, Windows/Linux):
 
-- Game library: point at directories; scan for `.elf` (later `.iso` via a CDVD
-  reader); each game gets a project folder with its config TOML + imports.
-- Pipeline view: analyze -> configure (stub/skip editor) -> recompile -> build
-  -> run, with logs and the unimplemented-instruction report surfaced.
-- Disassembly view backed by `ee::r5900`; import Aura projects / Ghidra CSVs.
+- `app/ee-studio` — developer/studio app (like ps2xStudio): game library, scan
+  directories and ISOs, analyze -> configure (stub/skip editor) -> recompile ->
+  build -> run, disassembly view, log console. [exists: skeleton]
+- `app/game-launcher` — per-game **release** launcher template. The game's
+  recompiled C++ and overrides are linked into a single executable; on first
+  launch it shows a GUI that asks for the game's disc image (.iso/.bin), reads
+  SYSTEM.CNF, extracts the boot ELF, and runs the game. No game assets are
+  shipped — the user provides a legally obtained dump, the same model as
+  N64Recomp / decomp ports (e.g. silent-hill-decomp). Extra launcher features
+  (renderer settings, audio, controls, mods) plug into the Settings panel.
+  [in progress: template]
+
+See docs/LAUNCHER.md for the per-game release workflow.
 
 ## Open questions
 

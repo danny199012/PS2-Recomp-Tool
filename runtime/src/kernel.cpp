@@ -653,7 +653,10 @@ void Kernel::sys_print(EEContext& ctx) {
             break;
         }
     }
-    std::fwrite(out.data(), 1, out.size(), stdout);
+    if (rt.console)
+        rt.console(out.data(), out.size());
+    else
+        std::fwrite(out.data(), 1, out.size(), stdout);
     std::fflush(stdout);
     set32(ctx, 2, 0);
 }
