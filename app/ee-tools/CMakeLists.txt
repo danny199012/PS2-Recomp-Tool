@@ -13,15 +13,11 @@
 # The command-line tools remain the scripting-friendly equivalent.
 #
 # Requires SDL3 + Dear ImGui (fetched automatically). Without SDL3 it builds
-# as a stub that prints a message.
+# as a stub that prints a message and waits so the window does not flash away.
 
-find_package(SDL3 QUIET)
-if(SDL3_FOUND OR TARGET SDL3::SDL3)
-  set(EE_HAS_SDL3 ON)
-else()
-  set(EE_HAS_SDL3 OFF)
-endif()
-
+# SDL3 is acquired once by the top-level cmake/ee_sdl3.cmake module (system
+# SDL3, or fetched/built from source when EE_FETCH_SDL3=ON). It sets
+# EE_HAS_SDL3 and provides the SDL3::SDL3 target.
 option(EE_TOOLS_IMGUI "Build the ee-tools GUI with Dear ImGui (requires SDL3)" ON)
 
 add_executable(ee-tools main.cpp)
@@ -54,4 +50,8 @@ if(EE_HAS_SDL3 AND EE_TOOLS_IMGUI)
   )
   target_include_directories(ee-tools PRIVATE
     ${tools_imgui_SOURCE_DIR} ${tools_imgui_SOURCE_DIR}/backends)
+  message(STATUS "ee-tools: building GUI (SDL3 + Dear ImGui)")
+else()
+  message(STATUS "ee-tools: SDL3 unavailable (EE_HAS_SDL3=OFF) or EE_TOOLS_IMGUI=OFF; "
+                 "building headless stub")
 endif()
