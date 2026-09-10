@@ -624,6 +624,8 @@ int run_gui() {
                 } else {
                     st.image.reset();
                     st.load_error = std::move(st.pending_load.error);
+                    if (!st.load_error.empty())
+                        log_lines.emplace_back("error: " + st.load_error);
                 }
                 st.pending_load = ToolState::LoadResult{};
             }
