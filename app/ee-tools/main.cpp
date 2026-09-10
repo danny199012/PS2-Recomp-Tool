@@ -820,9 +820,10 @@ int run_gui() {
 
 #else // !EE_HAS_IMGUI
 
+#include "../sdl3_required.hpp"
+
 int run_gui() {
-    std::fprintf(stderr, "ee-tools requires SDL3 + Dear ImGui (EE_HAS_IMGUI).\n");
-    return 1;
+    return ee::app::sdl3_required("ee-tools");
 }
 
 #endif // EE_HAS_IMGUI

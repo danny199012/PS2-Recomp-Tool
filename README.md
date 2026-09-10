@@ -63,8 +63,26 @@ for Aura / Ghidra / PS2Recomp interop.
 
 ## Building
 
-Requirements: **CMake ≥ 3.20** and a C++20 compiler (MSVC 2022, GCC 11+, Clang 14+).
-No external dependencies.
+Requirements: **CMake ≥ 3.20**, a C++20 compiler (MSVC 2022, GCC 11+, Clang 14+),
+and **git** (the GUI apps fetch SDL3 + Dear ImGui on first configure).
+
+The core pipeline (`libs/`, `tools/`, `runtime/`, tests) has **no external
+dependencies**. The three GUI apps — `ee-tools`, `ee-studio`, `game-launcher` —
+need **SDL3** and Dear ImGui. Dear ImGui is always fetched automatically. SDL3
+is resolved as follows (see `cmake/ee_sdl3.cmake`):
+
+1. A system/vendored SDL3 found by `find_package(SDL3)` — e.g. the official
+   `SDL3-devel-*.zip` located via `-DSDL3_DIR=...` or `-DCMAKE_PREFIX_PATH=...`.
+2. Otherwise, by default, SDL3 is **downloaded and built from source**
+   (`-DEE_FETCH_SDL3=ON`, the default). This works on a clean clone but makes
+   the **first** configure/build noticeably longer while SDL3 compiles.
+3. `-DEE_FETCH_SDL3=OFF` disables the fetch; if no system SDL3 is found the GUI
+   apps build as small stubs that print an explanatory message (and wait, so the
+   window does not flash closed) instead of a window.
+
+> If you previously configured without SDL3, delete the build directory before
+> reconfiguring so the SDL3 fetch is picked up: `rmdir /s /q build` (Windows) or
+> `rm -rf build` (Linux).
 
 **Windows (Visual Studio 2022):**
 ```bat

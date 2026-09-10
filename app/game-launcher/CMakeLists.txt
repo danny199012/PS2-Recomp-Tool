@@ -18,13 +18,10 @@
 #   game-launcher --extract <disc.iso> [--out dir]   extract the boot ELF
 #   game-launcher --run <disc.iso>                   run the game (stdout)
 
-find_package(SDL3 QUIET)
-if(SDL3_FOUND OR TARGET SDL3::SDL3)
-  set(EE_HAS_SDL3 ON)
-else()
-  set(EE_HAS_SDL3 OFF)
-endif()
-
+# SDL3 is acquired by the top-level cmake/ee_sdl3.cmake module (system SDL3,
+# or fetched/built from source when EE_FETCH_SDL3=ON). It sets EE_HAS_SDL3
+# and provides the SDL3::SDL3 target. Without SDL3 (or EE_LAUNCHER_IMGUI=OFF)
+# the launcher builds as a headless CLI (see modes documented above).
 option(EE_LAUNCHER_IMGUI "Build the game-launcher GUI with Dear ImGui (requires SDL3)" ON)
 
 # --- per-game identity (launcher_config.h) -----------------------------------
@@ -77,6 +74,10 @@ if(EE_HAS_SDL3 AND EE_LAUNCHER_IMGUI)
   )
   target_include_directories(game-launcher PRIVATE
     ${launcher_imgui_SOURCE_DIR} ${launcher_imgui_SOURCE_DIR}/backends)
+  message(STATUS "game-launcher: building GUI (SDL3 + Dear ImGui)")
+else()
+  message(STATUS "game-launcher: building headless CLI "
+                 "(SDL3 unavailable or EE_LAUNCHER_IMGUI=OFF)")
 endif()
 
 if(EE_GAME_RECOMP_SOURCES)

@@ -1,8 +1,13 @@
-find_package(SDL3 QUIET)
-if(SDL3_FOUND OR TARGET SDL3::SDL3)
-  set(EE_HAS_SDL3 ON)
-  add_executable(ee-studio main.cpp)
-  target_link_libraries(ee-studio PRIVATE ee::runtime ee::elf ee::analysis ee::codegen)
+# ee-studio: Game library + pipeline runner GUI for EERecomp.
+# Built with SDL3 (acquired once by the top-level cmake/ee_sdl3.cmake module:
+# system SDL3, or fetched/built from source when EE_FETCH_SDL3=ON). Dear ImGui
+# is optional (EE_WITH_IMGUI). Without SDL3 the app compiles as a headless
+# stub that explains SDL3 is required and waits so the window does not flash.
+
+add_executable(ee-studio main.cpp)
+target_link_libraries(ee-studio PRIVATE ee::runtime ee::elf ee::analysis ee::codegen)
+
+if(EE_HAS_SDL3)
   target_compile_definitions(ee-studio PRIVATE EE_HAS_SDL3)
   if(TARGET SDL3::SDL3)
     target_link_libraries(ee-studio PRIVATE SDL3::SDL3)
@@ -11,7 +16,7 @@ if(SDL3_FOUND OR TARGET SDL3::SDL3)
     target_link_libraries(ee-studio PRIVATE ${SDL3_LIBRARIES})
   endif()
 
-  # Try to find Dear ImGui via FetchContent (optional).
+  # Dear ImGui is optional (raw SDL3 rendering is used otherwise).
   option(EE_WITH_IMGUI "Build ee-studio with Dear ImGui" OFF)
   if(EE_WITH_IMGUI)
     include(FetchContent)
@@ -35,9 +40,7 @@ if(SDL3_FOUND OR TARGET SDL3::SDL3)
     target_include_directories(ee-studio PRIVATE ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
   endif()
 
-  message(STATUS "ee-studio: SDL3 found, building GUI launcher (EE_WITH_IMGUI=${EE_WITH_IMGUI})")
+  message(STATUS "ee-studio: building GUI (EE_WITH_IMGUI=${EE_WITH_IMGUI})")
 else()
-  message(STATUS "ee-studio: SDL3 not found, building headless stub")
-  add_executable(ee-studio main.cpp)
-  target_link_libraries(ee-studio PRIVATE ee::runtime ee::elf ee::analysis ee::codegen)
+  message(STATUS "ee-studio: SDL3 unavailable (EE_HAS_SDL3=OFF); building headless stub")
 endif()

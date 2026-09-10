@@ -29,6 +29,15 @@ add_subdirectory(libs/analysis)
 add_subdirectory(libs/codegen)
 add_subdirectory(runtime)
 
+# Acquire SDL3 once for all GUI apps (ee-studio, game-launcher, ee-tools).
+# Either uses a system/vendored SDL3 or fetches/builds it from source when
+# EE_FETCH_SDL3 is ON (default). Sets EE_HAS_SDL3 and provides SDL3::SDL3.
+# See cmake/ee_sdl3.cmake for details and the -DEE_FETCH_SDL3=OFF escape hatch.
+if(EE_BUILD_STUDIO OR EE_BUILD_LAUNCHER OR EE_BUILD_ETOOLS)
+  list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+  include(ee_sdl3)
+endif()
+
 if(EE_BUILD_TOOLS)
   add_subdirectory(tools/ee-disasm)
   add_subdirectory(tools/ee-analyze)

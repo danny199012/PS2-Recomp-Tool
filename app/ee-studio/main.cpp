@@ -365,9 +365,8 @@ int main(int argc, char** argv) {
 }
 
 #else // !EE_HAS_SDL3
-#include <cstdio>
+#include "../sdl3_required.hpp"
 int main() {
-    std::fprintf(stderr, "ee-studio requires SDL3. Build with -DEE_HAS_SDL3=ON.\n");
-    return 1;
+    return ee::app::sdl3_required("ee-studio");
 }
 #endif
