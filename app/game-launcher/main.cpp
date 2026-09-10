@@ -24,6 +24,9 @@
 #include <ee/cdvd.hpp>
 #include <ee/elf.hpp>
 #include <ee/game_overrides.hpp>
+#include <ee/gs_renderer.hpp>
+#include <ee/hw.hpp>
+#include <ee/iop.hpp>
 #include <ee/kernel.hpp>
 #include <ee/runtime.hpp>
 
@@ -35,6 +38,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -319,6 +323,16 @@ int main(int argc, char** argv) {
 #if EE_GUI_MODE
 namespace {
 
+// Keyboard -> PS2 pad button mapping. Active-high bits (set = pressed) used by
+// Iop::PadState::buttons. Matches the ps2sdk pad bit numbering for the common
+// buttons (L2=0x0001 ... LEFT=0x8000).
+enum : u32 {
+    kPadL2 = 0x0001, kPadR2 = 0x0002, kPadL1 = 0x0004, kPadR1 = 0x0008,
+    kPadTriangle = 0x0010, kPadCircle = 0x0020, kPadCross = 0x0040, kPadSquare = 0x0080,
+    kPadSelect = 0x0100, kPadStart = 0x0800,
+    kPadUp = 0x1000, kPadRight = 0x2000, kPadDown = 0x4000, kPadLeft = 0x8000,
+};
+
 struct GuiState {
     DiscState disc;
     Settings settings;
@@ -331,6 +345,23 @@ struct GuiState {
     std::string console;
     std::mutex console_mx;
     std::thread worker;
+
+    // Runtime shared with the worker thread (created on launch, replaced on
+    // relaunch after the previous worker has finished). Never reset from the
+    // worker; it lives until the next launch or shutdown.
+    std::shared_ptr<ee::rt::Runtime> rt;
+
+    // GS framebuffer presented by the worker's on_frame callback; the GUI
+    // thread copies it into an SDL texture. Guarded by gs_mx.
+    std::mutex gs_mx;
+    std::vector<u8> gs_rgba;
+    int gs_w = 0, gs_h = 0;
+    std::atomic<bool> gs_dirty{false};
+    SDL_Texture* display_tex = nullptr;
+    int display_tex_w = 0, display_tex_h = 0;
+
+    // Keyboard-sourced pad state pushed to the IOP each frame.
+    ee::rt::Iop::PadState pad{0, 128, 128, 128, 128};
 
     // In-app file browser for the disc prompt (no OS-native dialog needed).
     uitools::FileBrowser browser;
@@ -417,6 +448,33 @@ int run_gui(int argc, char** argv) {
                     gui_log(g, "boot:  " + g.disc.boot_elf + "\n");
                 } else {
                     g.status = g.disc.error;
+                }
+            } else if (ev.type == SDL_EVENT_KEY_DOWN || ev.type == SDL_EVENT_KEY_UP) {
+                // Keyboard -> PS2 pad (port 0). Works for any game that reads the
+                // standard pad via the SDK; no per-game input patch needed.
+                const bool down = ev.type == SDL_EVENT_KEY_DOWN;
+                auto set = [&](u32 bit) {
+                    if (down)
+                        g.pad.buttons |= bit;
+                    else
+                        g.pad.buttons &= ~bit;
+                };
+                switch (ev.key.key) {
+                case SDLK_UP: set(kPadUp); break;
+                case SDLK_DOWN: set(kPadDown); break;
+                case SDLK_LEFT: set(kPadLeft); break;
+                case SDLK_RIGHT: set(kPadRight); break;
+                case SDLK_RETURN: set(kPadStart); break;
+                case SDLK_BACKSPACE: set(kPadSelect); break;
+                case SDLK_Z: set(kPadCross); break;   // jump / confirm
+                case SDLK_X: set(kPadCircle); break;  // cancel
+                case SDLK_A: set(kPadSquare); break;
+                case SDLK_S: set(kPadTriangle); break;
+                case SDLK_Q: set(kPadL1); break;
+                case SDLK_E: set(kPadR1); break;
+                case SDLK_R: set(kPadL2); break;
+                case SDLK_T: set(kPadR2); break;
+                default: break;
                 }
             }
         }
@@ -522,12 +580,46 @@ int run_gui(int argc, char** argv) {
                     boot.boot_name = g.disc.boot_name;
                     boot.crc = g.disc.crc;
                     boot.image = *g.disc.image;
+
+                    // Create the shared runtime: the worker runs the game, the
+                    // GUI thread presents the GS framebuffer and feeds pad input.
+                    g.rt = std::make_shared<ee::rt::Runtime>();
+                    ee::rt::Runtime* rtraw = g.rt.get();
+                    rtraw->console = [&g](const char* p, size_t n) {
+                        gui_log(g, std::string(p, n));
+                    };
+                    // On GS FINISH, rasterize and copy the framebuffer to a
+                    // buffer the GUI thread can present. Runs on the worker
+                    // thread; rtraw is valid for the entire run.
+                    rtraw->on_frame = [&g, rtraw]() {
+                        ee::rt::GsRenderer ren(rtraw->hw->gs);
+                        ren.render_frame();
+                        auto fb = ren.read_framebuffer_rgba();
+                        if (fb.size() < 64)
+                            return; // no display configured yet
+                        std::lock_guard<std::mutex> lk(g.gs_mx);
+                        g.gs_rgba = std::move(fb);
+                        g.gs_w = int(ren.fb_width);
+                        g.gs_h = int(ren.fb_height);
+                        g.gs_dirty.store(true);
+                    };
+                    // Give the IOP CDVD HLE the real disc image (per-game
+                    // independent: standard SDK CDVD reads work on any game).
+                    rtraw->hw->iop.set_cdvd(&g.disc.cdvd);
+                    // Reset the presentation state for the new run.
+                    if (g.display_tex) {
+                        SDL_DestroyTexture(g.display_tex);
+                        g.display_tex = nullptr;
+                        g.display_tex_w = g.display_tex_h = 0;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lk(g.gs_mx);
+                        g.gs_rgba.clear();
+                        g.gs_dirty.store(false);
+                    }
+
                     g.worker = std::thread([&g, boot = std::move(boot)]() mutable {
-                        ee::rt::Runtime rt;
-                        rt.console = [&g](const char* p, size_t n) {
-                            gui_log(g, std::string(p, n));
-                        };
-                        g.exit_code = run_game(rt, boot);
+                        g.exit_code = run_game(*g.rt, boot);
                         g.running = false;
                         char b[64];
                         std::snprintf(b, sizeof b, "--- exit (%d) ---\n", int(g.exit_code));
@@ -574,6 +666,54 @@ int run_gui(int argc, char** argv) {
         }
         ImGui::End();
 
+        // --- Game Display (GS framebuffer presented via SDL) ---
+        {
+            // Push keyboard-sourced pad state into the IOP (thread-safe).
+            if (g.rt)
+                g.rt->hw->iop.set_pad(0, g.pad);
+
+            // Pull the latest rendered frame into an SDL texture.
+            std::vector<u8> fb;
+            int w = 0, h = 0;
+            {
+                std::lock_guard<std::mutex> lk(g.gs_mx);
+                if (g.gs_dirty.exchange(false)) {
+                    fb = g.gs_rgba;
+                    w = g.gs_w;
+                    h = g.gs_h;
+                }
+            }
+            if (w > 0 && h > 0 && !fb.empty()) {
+                if (g.display_tex && (g.display_tex_w != w || g.display_tex_h != h)) {
+                    SDL_DestroyTexture(g.display_tex);
+                    g.display_tex = nullptr;
+                }
+                if (!g.display_tex) {
+                    g.display_tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888,
+                                                      SDL_TEXTUREACCESS_STREAMING, w, h);
+                    g.display_tex_w = w;
+                    g.display_tex_h = h;
+                }
+                if (g.display_tex)
+                    SDL_UpdateTexture(g.display_tex, nullptr, fb.data(), w * 4);
+            }
+
+            ImGui::Begin("Game Display");
+            if (g.display_tex) {
+                ImGui::Image((ImTextureID)(intptr_t)g.display_tex,
+                             ImVec2(float(g.display_tex_w), float(g.display_tex_h)));
+                ImGui::TextWrapped(
+                    "Controls: Arrows = D-pad, Z = CROSS, X = CIRCLE, A = SQUARE, "
+                    "S = TRIANGLE, Enter = Start, Backspace = Select, "
+                    "Q = L1, E = R1, R = L2, T = R2");
+            } else {
+                ImGui::TextDisabled(g.running.load()
+                    ? "Waiting for the game to present a frame (GS FINISH)..."
+                    : "Launch the game to see the GS framebuffer here.");
+            }
+            ImGui::End();
+        }
+
         // --- Status bar ---
         ImGui::Begin("Status");
         ImGui::TextWrapped("%s", g.status.c_str());
@@ -587,6 +727,8 @@ int run_gui(int argc, char** argv) {
     }
 
     if (g.worker.joinable()) g.worker.join();
+    if (g.display_tex)
+        SDL_DestroyTexture(g.display_tex);
 
     ImGui_ImplSDLRenderer3_Shutdown();
     ImGui_ImplSDL3_Shutdown();

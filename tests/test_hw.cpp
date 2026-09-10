@@ -175,6 +175,52 @@ int main() {
         CHECK(hw2.gs.read_hwreg(0x05) == 0x1234);
     }
 
+    // --- GS FINISH -> Runtime::on_frame (drives the launcher's display) ---
+    {
+        Runtime rtt; // its Hw is wired to it in the Runtime ctor
+        int frames = 0;
+        rtt.on_frame = [&frames]() { ++frames; };
+
+        // GIF stream: PACKED tag with one AD write to GS register 0x61 (FINISH).
+        u8 buf[32] = {};
+        u64 lo = 1 | (u64(1) << 47); // nloop=1, nreg=1
+        u64 hi = 0x0EULL;            // regs=[AD]
+        std::memcpy(&buf[0], &lo, 8);
+        std::memcpy(&buf[8], &hi, 8);
+        u64 ad_lo = 0x12345678;
+        u64 ad_hi = 0x61; // FINISH
+        std::memcpy(&buf[16], &ad_lo, 8);
+        std::memcpy(&buf[24], &ad_hi, 8);
+
+        rtt.hw->gif.feed(rtt.hw->gs, buf, 32);
+        rtt.hw->on_gif_frame_done();
+        CHECK(frames == 1); // FINISH triggered the frame callback
+        CHECK(rtt.hw->gs.read_hwreg(0x61) == 0x12345678);
+
+        // A GIF stream WITHOUT FINISH must not call on_frame.
+        ad_hi = 0x05; // CLAMP_1
+        std::memcpy(&buf[24], &ad_hi, 8);
+        rtt.hw->gif.feed(rtt.hw->gs, buf, 32);
+        rtt.hw->on_gif_frame_done();
+        CHECK(frames == 1); // unchanged
+    }
+
+    // --- IOP: thread-safe pad get/set + CDVD fallback without a host ISO ---
+    {
+        Iop iop;
+        Iop::PadState p{0x4000, 100, 200, 50, 250};
+        iop.set_pad(0, p);
+        Iop::PadState got = iop.get_pad(0);
+        CHECK(got.buttons == 0x4000);
+        CHECK(got.lx == 100 && got.ly == 200 && got.rx == 50 && got.ry == 250);
+        CHECK(iop.disc_type() == 0x14); // DVD default when no ISO attached
+        u8 buf[4096];
+        std::memset(buf, 0xAB, sizeof buf);
+        const u32 r = iop.cdvd_read(0, buf, 2); // no disc: "success" + zeroed buffer
+        CHECK(r == 2);
+        CHECK(buf[0] == 0 && buf[2048] == 0);
+    }
+
     std::printf("test_hw: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

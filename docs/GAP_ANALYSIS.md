@@ -70,11 +70,32 @@ microcode interpreter and the GS/DMA/VIF/GIF pipeline are PS2Recomp's stated gap
    - PS2Recomp ships `ExportPS2Functions.java` for Ghidra.
    - Impact: Easier onboarding for Ghidra users.
 
-6. **Display output to SDL window**
-   - Current: `GsRenderer::read_framebuffer_rgba()` produces an RGBA buffer, but
-     nothing copies it to the SDL window's texture. The game-launcher and
-     ee-studio don't render the framebuffer.
-   - Impact: Even if the GS draws correctly, you can't see it.
+6. **Display output to SDL window** — **Done** (game-launcher)
+   - `GIF FINISH -> Runtime::on_frame` wiring now flushes the software renderer
+     and copies the GS framebuffer to a buffer the GUI thread presents via an
+     SDL texture in a "Game Display" window. Games that send a GS FINISH tag
+     (most 3D titles) show their output live.
+   - Caveats: the GS rasterizer still lacks texture mapping / proper VRAM
+     swizzle, so visuals are flat-shaded and colors may be wrong; and ee-studio
+     does not display the framebuffer yet (only game-launcher does).
+
+### P0.5 — IOP host-services foundation (partially done)
+
+The IOP HLE is the key to "works per-game without individual patches": instead
+of patching each game's functions, emulate the **standard PS2 SDK services**
+every game calls through the SIF (CDVD file reads, pad input, memory card,
+audio). Games using the stock SDK then work generically; per-game overrides are
+only needed for non-standard cases.
+
+- **Done**: `Iop::set_cdvd()` attaches the host ISO so `cdvd_read()` reads real
+  disc sectors; `disc_type()` reports DVD; pad get/set is thread-safe for
+  host-sourced input; the game-launcher injects the opened disc and keyboard
+  (as pad port 0) into the running game.
+- **Still needed**: bind the sdk-named functions (from Aura/Ghidra imports) to
+  handlers that use these services — `sceCdRead/ReadSync`, `sceCdSearchFile`,
+  `scePadRead`, `sceMc*`, `SifLoadModule`, `printf`/`scePrintf`. The import
+  names are already available (e.g. "386 SDK-named" in the user's Aura export),
+  so `stubs = ["sceCdRead", ...]` can bind them once the handlers exist.
 
 ### P2 — Future / nice-to-have
 
@@ -85,8 +106,10 @@ microcode interpreter and the GS/DMA/VIF/GIF pipeline are PS2Recomp's stated gap
 
 ## Recommended iteration order
 
-1. Wire the GS framebuffer to the SDL window (P1.6) — quick win, makes progress visible
-2. IOP file loading via SIF RPC (P0.1) — unblocks disc-based games
-3. GS texture mapping + swizzle (P0.2) — makes graphics correct
-4. Syscall file I/O (P0.3) — complements IOP work
-5. Relocation auto-binding (P1.4) — reduces manual config burden
+1. **Done**: GS framebuffer -> SDL window (game-launcher "Game Display").
+2. Standard-SDK handler set (sceCd*, scePad*, sceMc*, printf) — unblocks most
+   games' boot path without per-game patches. The IOP plumbing (host ISO + pad)
+   is already in place; this is binding + a few dozen ABI-correct handlers.
+3. GS texture mapping + swizzle (P0.2) — makes graphics correct.
+4. Syscall file I/O (P0.3) — complements the IOP work.
+5. Relocation auto-binding (P1.4) — reduces manual config burden.

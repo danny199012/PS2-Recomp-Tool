@@ -24,6 +24,8 @@ class Hw;
 
 // --- GS (Graphics Synthesizer): register file + 4 MB VRAM ----------------------
 
+class GsRenderer; // forward declaration (defined in gs_renderer.hpp)
+
 class Gs {
 public:
     std::array<u8, 4 * 1024 * 1024> vram{};
@@ -37,6 +39,10 @@ public:
     // VRAM write pointer for GIF IMAGE mode (from BITBLTBUF/TRX* registers).
     u32 image_dst = 0;
     u32 image_width = 0; // in pixels (TODO: swizzled 2D layout)
+
+    // When set by the Runtime, GIF vertex writes are forwarded to the
+    // software renderer for rasterization. Null = collect stats only (tests).
+    GsRenderer* renderer = nullptr;
 
     u64 read_priv(u32 addr) const;
     void write_priv(u32 addr, u64 value);
@@ -54,6 +60,7 @@ public:
     void feed(Gs& gs, const u8* data, size_t size);
 
     u32 tags_processed = 0; // stats (tests)
+    bool gs_finish_signal = false; // set when a FINISH GS register write is seen
 
 private:
     void packed_write(Gs& gs, u32 reg, u64 dlo, u64 dhi);
@@ -138,6 +145,7 @@ public:
 
     Iop iop;               // IOP HLE (SIF, CDVD, pad, MC)
     bool vu_micro_run = false;  // set by VIF MSCAL before VU1 step
+    bool gs_finish_pending = false; // set when GIF processes a FINISH tag
 
     u64 mmio_read(u32 addr, u32 size);
     void mmio_write(u32 addr, u64 value, u32 size);
@@ -147,6 +155,11 @@ public:
     u8* write_ptr(u32 addr, u32 size);
     u32 read32(u32 addr) const;
     void write32(u32 addr, u32 value);
+
+    // Call after a GIF stream is fed (DMA GIF channel or VIF1 DIRECT). If the
+    // stream contained a GS FINISH register write, flush the software renderer
+    // and invoke Runtime::on_frame so a host window can present the framebuffer.
+    void on_gif_frame_done();
 
     std::set<u32> reported_mmio; // log-once
 };

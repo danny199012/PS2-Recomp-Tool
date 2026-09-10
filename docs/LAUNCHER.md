@@ -23,11 +23,27 @@ recompiled C++ into it and it becomes that game's port.
 3. The launcher opens the disc, parses `SYSTEM.CNF`, shows the boot ELF name and
    CRC32, and copies `boot.elf` into `game_data/<GameName>/`.
 4. Click **Launch game**. The embedded recompiled code runs; guest output
-   (`_print`, EE STDOUT) streams into the launcher's Console panel.
+   (`_print`, EE STDOUT) streams into the launcher's Console panel, and the GS
+   framebuffer appears live in the **Game Display** window (games that send a
+   GS FINISH tag update it each frame).
 
 Extracted data lives next to the executable in `game_data/<GameName>/`
 (`boot.elf`, `settings.txt`), so re-running does not need the disc again unless
 the user deletes it.
+
+### Keyboard controls (pad port 0)
+
+While the game is running, the keyboard acts as a DualShock 2 controller for
+any game that reads the standard pad via the SDK (no per-game input patch):
+
+| Key | PS2 button |
+|---|---|
+| Arrows | D-pad |
+| Z / X | Cross / Circle |
+| A / S | Square / Triangle |
+| Enter / Backspace | Start / Select |
+| Q / E | L1 / R1 |
+| R / T | L2 / R2 |
 
 ## Developer workflow (making a release)
 
@@ -71,8 +87,17 @@ game-launcher --run <disc.iso>                   # run the embedded game (stdout
 
 ## Launcher features (extension points)
 
+- **Game Display**: the GS software renderer rasterizes GIF draw calls (< GS
+  FINISH) and the launcher presents the framebuffer in a window via
+  `Runtime::on_frame`. See `docs/GAP_ANALYSIS.md` for remaining rasterizer
+  gaps (texture mapping, VRAM swizzle).
 - **Console**: set `Runtime::console` to redirect guest output into a GUI pane
   (done in `run_gui`); when unset, output goes to the host stdout.
+- **IOP host services**: the opened disc ISO is injected into the runtime's IOP
+  (`Iop::set_cdvd`), so standard SDK CDVD reads can hit the real disc. Host
+  pad input (keyboard, see above) is pushed into `Iop::set_pad` each frame.
+  This is the base for per-game-independent I/O HLE — no per-game patches for
+  games that use the stock SDK services.
 - **Settings**: `Settings` in `main.cpp` persists `render_backend`, internal
   resolution, VSync and volume to `game_data/<GameName>/settings.txt`. Wire the
   real GS renderer options (`GsRenderer`) into these once the renderer lands.

@@ -17,6 +17,7 @@
 namespace ee::rt {
 
 class Hw;
+class Cdvd; // ISO disc reader (cdvd.hpp)
 
 class Iop {
 public:
@@ -32,11 +33,18 @@ public:
     u32 sif_read_reg(u32 addr) const;
     void sif_write_reg(Hw& hw, u32 addr, u32 value);
 
-    // CDVD: minimal HLE - returns fixed disc info.
+    // CDVD: reads through the host ISO when one is attached via set_cdvd
+    // (per-game-independent: any game using the standard SDK CDVD service
+    // reads the actual disc without per-game patches).
     u32 cdvd_read(u32 lba, u8* buf, u32 sectors);
-    void cdvd_init() { m_cdvd_ready = true; }
+    void cdvd_init() { m_cdvd_ready = true; u32 t = disc_type(); (void)t; }
+    // Get the disc type reported by the host ISO.
+    u32 disc_type() const;
+    // Attach the host ISO (owned by the caller; must outlive this Iop).
+    void set_cdvd(Cdvd* cdvd) { m_cdvd = cdvd; }
+    Cdvd* cdvd() const { return m_cdvd; }
 
-    // Pad: returns a fixed/programmatic pad state.
+    // Pad: thread-safe host-driven pad state (see PadState).
     struct PadState { u32 buttons; u8 lx, ly, rx, ry; };
     PadState get_pad(int port) const;
     void set_pad(int port, PadState state);
@@ -64,8 +72,9 @@ public:
 
 private:
     bool m_cdvd_ready = false;
+    Cdvd* m_cdvd = nullptr; // host ISO, not owned
+    mutable std::mutex m_mutex;
     PadState m_pad[2] = {};
-    std::mutex m_mutex;
     std::vector<SifCmd> m_sif_cmd_queue;
 
     // SIF registers

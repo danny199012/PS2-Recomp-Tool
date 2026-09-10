@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <ee/iop.hpp>
 #include <ee/hw.hpp>
+#include <ee/cdvd.hpp>
 
 #include <cstring>
 
@@ -77,20 +78,30 @@ void Iop::sif_write_reg(Hw& hw, u32 addr, u32 value) {
 // --- CDVD -----------------------------------------------------------------------------
 
 u32 Iop::cdvd_read(u32 lba, u8* buf, u32 sectors) {
-    // HLE: return zeros (no disc loaded). Real implementation would read from ISO.
-    if (buf && sectors > 0)
-        std::memset(buf, 0, sectors * 2048);
+    // HLE: if a host ISO is attached, read the real disc sectors. Otherwise
+    // return zeros so callers see "success" but get blank data.
+    if (buf && sectors > 0) {
+        if (m_cdvd && m_cdvd->is_open())
+            return m_cdvd->read_sectors(lba, sectors, buf) ? sectors : 0;
+        std::memset(buf, 0, size_t(sectors) * 2048);
+    }
     return sectors; // pretend success
+}
+
+u32 Iop::disc_type() const {
+    return m_cdvd ? m_cdvd->disc_type() : 0x14; // DVD (0x14) when no ISO attached
 }
 
 // --- Pad -------------------------------------------------------------------------------
 
 Iop::PadState Iop::get_pad(int port) const {
+    std::lock_guard lk(m_mutex);
     if (port < 0 || port > 1) return {0, 128, 128, 128, 128};
     return m_pad[port];
 }
 
 void Iop::set_pad(int port, PadState state) {
+    std::lock_guard lk(m_mutex);
     if (port < 0 || port > 1) return;
     m_pad[port] = state;
 }

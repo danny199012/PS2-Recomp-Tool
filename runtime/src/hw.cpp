@@ -2,6 +2,7 @@
 #include <ee/hw.hpp>
 #include <ee/iop.hpp>
 #include <ee/runtime.hpp>
+#include <ee/gs_renderer.hpp>
 #include <ee/vu1.hpp>
 
 #include <cstdio>
@@ -55,9 +56,36 @@ u64 Gs::read_hwreg(u8 reg) const {
 
 void Gs::add_vertex(u64 lo, u64 hi, u32 reg) {
     ++vertices_received;
-    (void)lo;
+
+    if (!renderer)
+        return;
+
+    // Decode GIF XYZ2/XYZF2 packed vertex data.
+    // XYZ2: lo = x(16) | y(16) | z(32) | (hi unused)
+    // XYZF2: lo = x(16) | y(16) | z(16) | fog(16)
+    // Coordinates are in 12.4 fixed-point (divide by 16 for pixel coords).
+    const float x = float(lo & 0xFFFF) / 16.0f;
+    const float y = float((lo >> 16) & 0xFFFF) / 16.0f;
+    const float z = 0.0f; // depth not used in the software rasterizer
+
+    // Read RGBAQ register (set by a prior GIF RGBAQ packed write).
+    u64 rgbaq = read_hwreg(0x01); // RGBAQ: R,G,B,A bytes + Q float
+    u32 rgba = u32(rgbaq & 0xFF) | (u32((rgbaq >> 8) & 0xFF) << 8) |
+               (u32((rgbaq >> 16) & 0xFF) << 16) | (u32((rgbaq >> 24) & 0xFF) << 24);
+
+    // Read PRIM register to know the primitive type.
+    u64 prim = read_hwreg(0x00);
+    renderer->m_prim_type = u32(prim & 7);
+
+    GsRenderer::Vertex v{x, y, z, rgba};
+    renderer->m_vertices.push_back(v);
+
+    // Try to draw if we have enough vertices for the current primitive.
+    // Sprite needs 2, Triangle needs 3, etc. draw_pending handles the logic.
+    renderer->draw_pending();
+
     (void)hi;
-    (void)reg; // M6: vertex processing / drawing
+    (void)reg;
 }
 
 void Gs::image_write(u64 lo, u64 hi) {
@@ -93,7 +121,12 @@ void Gif::packed_write(Gs& gs, u32 reg, u64 dlo, u64 dhi) {
         gs.write_hwreg(0x0A, (dhi >> 32) & 0xFF);
         break;
     case 0x0E: // AD: address in high-qword low byte, value in low qword
-        gs.write_hwreg(u8(dhi & 0xFF), dlo);
+        {
+            const u8 gs_reg = u8(dhi & 0xFF);
+            gs.write_hwreg(gs_reg, dlo);
+            if (gs_reg == 0x61) // FINISH: the game finished drawing a frame
+                gs_finish_signal = true;
+        }
         break;
     case 0x0F: // NOP
     default:
@@ -304,8 +337,10 @@ size_t Vif::feed(Hw& hw, int which, const u8* data, size_t size) {
             const size_t bytes = size_t(quads) * 16;
             if (pos + bytes > size)
                 return pos;
-            if (which == 1)
+            if (which == 1) {
                 hw.gif.feed(hw.gs, data + pos, bytes);
+                hw.on_gif_frame_done();
+            }
             pos += bytes;
             break;
         }
@@ -494,8 +529,10 @@ void Dmac::transfer(Hw& hw, int c, u32 addr, u32 qwc, bool to_spr) {
     }
     case 2: { // GIF
         const u8* src = hw.read(addr, bytes);
-        if (src)
+        if (src) {
             hw.gif.feed(hw.gs, src, bytes);
+            hw.on_gif_frame_done();
+        }
         break;
     }
     case 8: { // fromSPR: scratchpad -> RAM
@@ -616,6 +653,16 @@ void Hw::mmio_write(u32 addr, u64 value, u32 size) {
     if (reported_mmio.insert(addr).second)
         std::fprintf(stderr, "[hw] mmio write 0x%08X = 0x%llX (size %u) (stub)\n", addr,
                      (unsigned long long)value, size);
+}
+
+void Hw::on_gif_frame_done() {
+    if (!gif.gs_finish_signal)
+        return;
+    gif.gs_finish_signal = false;
+    if (gs.renderer)
+        gs.renderer->render_frame();
+    if (runtime && runtime->on_frame)
+        runtime->on_frame();
 }
 
 } // namespace ee::rt

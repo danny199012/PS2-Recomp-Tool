@@ -71,6 +71,12 @@ struct Runtime {
     // to surface guest output in a GUI console.
     std::function<void(const char* data, size_t size)> console;
 
+    // Optional frame callback: called after each GS FINISH tag is processed
+    // (i.e. the game finished drawing a frame). GUI launchers use this to
+    // copy the GS framebuffer into a shared buffer for SDL presentation.
+    // Called on the worker thread — must be thread-safe.
+    std::function<void()> on_frame;
+
     Runtime();
     ~Runtime(); // joins kernel threads
 
