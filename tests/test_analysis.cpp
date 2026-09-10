@@ -76,6 +76,38 @@ int main() {
     CHECK(toml.find("stubs") != std::string::npos);
     CHECK(toml.find("[patches]") != std::string::npos);
 
+    // Progress callback: a cooperative hook must not change the result, must
+    // report a monotonic fraction reaching 1.0, and must stay within [0,1].
+    {
+        double max_frac = -1.0;
+        double prev_frac = -1.0;
+        bool in_range = true, monotonic = true;
+        ee::analysis::ProgressFn prog = [&](double frac, const char*) {
+            if (frac < 0.0 || frac > 1.0) in_range = false;
+            if (frac < prev_frac) monotonic = false;
+            prev_frac = frac;
+            if (frac > max_frac) max_frac = frac;
+            return true; // never cancel
+        };
+        const auto res2 = ee::analysis::analyze(*image, {}, {}, prog);
+        CHECK(res2.functions.size() == 3);      // same result as without a callback
+        CHECK(in_range);
+        CHECK(monotonic);
+        CHECK(max_frac >= 0.999 && max_frac <= 1.0);
+    }
+
+    // Cancellation: returning false from the callback must abort promptly and
+    // yield only the seeded functions (no walked bodies, no prologue sweep).
+    {
+        ee::analysis::ProgressFn cancel_immediately = [](double, const char*) {
+            return false;
+        };
+        const auto res3 = ee::analysis::analyze(*image, {}, {}, cancel_immediately);
+        CHECK(res3.functions.size() <= 3);
+        CHECK(res3.function_at(ee::test::kHiddenAddr) == nullptr); // prologue scan skipped
+        CHECK(res3.jump_tables.empty());
+    }
+
     std::printf("test_analysis: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

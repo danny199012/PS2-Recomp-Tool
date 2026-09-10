@@ -6,6 +6,10 @@
 #   - Disassemble (ee-disasm)
 #   - Analyze     (ee-analyze: function discovery + TOML/CSV/JSON export)
 #   - Recompile   (ee-recomp: emit C++ from the ELF + config)
+# Accepts .elf files and PS2 disc images (.iso/.bin, boot ELF auto-extracted
+# via SYSTEM.CNF). Load/disassemble/analyze/recompile run on a background
+# worker thread (progress bar + cancel) so the GUI stays responsive. Links
+# ee::runtime for the ISO reader and std::thread support.
 # The command-line tools remain the scripting-friendly equivalent.
 #
 # Requires SDL3 + Dear ImGui (fetched automatically). Without SDL3 it builds
@@ -21,7 +25,7 @@ endif()
 option(EE_TOOLS_IMGUI "Build the ee-tools GUI with Dear ImGui (requires SDL3)" ON)
 
 add_executable(ee-tools main.cpp)
-target_link_libraries(ee-tools PRIVATE ee::elf ee::r5900 ee::analysis ee::codegen)
+target_link_libraries(ee-tools PRIVATE ee::elf ee::r5900 ee::analysis ee::codegen ee::runtime)
 
 if(EE_HAS_SDL3 AND EE_TOOLS_IMGUI)
   target_compile_definitions(ee-tools PRIVATE EE_HAS_SDL3 EE_HAS_IMGUI)

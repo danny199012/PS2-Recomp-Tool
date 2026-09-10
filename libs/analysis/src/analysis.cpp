@@ -76,12 +76,33 @@ bool is_prologue(u32 raw) {
     return false;
 }
 
+// Cooperative progress reporting / cancellation for long analyses.
+struct ProgressCtl {
+    ProgressFn fn;       // may be empty (no-op)
+    u64 total = 0;       // total executable instruction count (denominator)
+    u64 covered = 0;     // instructions covered by recursive walks
+    u64 scanned = 0;     // instructions scanned by the prologue sweep
+    bool cancelled = false;
+
+    // Returns true to continue, false if cancellation was requested.
+    bool report(double frac, const char* status) {
+        if (!fn)
+            return true;
+        if (!fn(frac < 0.0 ? 0.0 : (frac > 1.0 ? 1.0 : frac), status)) {
+            cancelled = true;
+            return false;
+        }
+        return true;
+    }
+};
+
 struct Walker {
     const elf::Image& img;
     const Options& opt;
     Result& res;
     std::map<u32, u32> claimed; // code address -> owning function start
     std::set<u32> known;        // function starts
+    ProgressCtl* ctl = nullptr; // optional progress / cancel hook
 
     bool add_function(u32 addr, FuncSource src) {
         if (!is_exec_addr(img, addr) || known.count(addr))
@@ -184,12 +205,18 @@ struct Walker {
             seen.insert(addr);
             claimed[addr] = fn.start;
             max_end = std::max(max_end, addr + 4);
+            if (ctl) {
+                ++ctl->covered;
+                if ((ctl->covered & 0x3FF) == 0) // every 1024 instructions
+                    ctl->report(0.5 * double(ctl->covered) / double(ctl->total + 1),
+                                "discovering functions");
+            }
         };
 
-        while (!queue.empty()) {
+        while (!queue.empty() && !(ctl && ctl->cancelled)) {
             u32 addr = queue.back();
             queue.pop_back();
-            while (true) {
+            while (!(ctl && ctl->cancelled)) {
                 if ((addr & 3) || seen.count(addr) || claimed.count(addr) || !is_exec_addr(img, addr))
                     break;
                 auto word = img.read_u32(addr);
@@ -261,7 +288,8 @@ struct Walker {
 
 } // namespace
 
-Result analyze(const elf::Image& image, const Options& opt, const std::map<u32, std::string>& imports) {
+Result analyze(const elf::Image& image, const Options& opt, const std::map<u32, std::string>& imports,
+               ProgressFn progress) {
     Result res;
     for (const elf::Symbol& sym : image.symbols())
         if (!sym.name.empty() && sym.value != 0)
@@ -269,7 +297,14 @@ Result analyze(const elf::Image& image, const Options& opt, const std::map<u32, 
     for (const auto& [addr, name] : imports)
         res.names[addr] = name;
 
-    Walker w{image, opt, res, {}, {}};
+    ProgressCtl ctl;
+    ctl.fn = std::move(progress);
+    for (const elf::Section& sec : image.sections())
+        if (sec.executable())
+            ctl.total += u64(sec.size) / 4;
+
+    Walker w{image, opt, res, {}, {}, &ctl};
+    ctl.report(0.0, "seeding functions");
 
     if (image.entry() != 0)
         w.add_function(image.entry(), FuncSource::Entry);
@@ -280,26 +315,40 @@ Result analyze(const elf::Image& image, const Options& opt, const std::map<u32, 
         w.add_function(addr, FuncSource::Import);
 
     auto process_pending = [&]() {
-        for (size_t fi = 0; fi < res.functions.size(); ++fi)
+        for (size_t fi = 0; fi < res.functions.size() && !ctl.cancelled; ++fi)
             if (res.functions[fi].end == 0)
                 w.walk(fi);
     };
     process_pending();
 
-    if (opt.prologue_scan) {
+    if (opt.prologue_scan && !ctl.cancelled) {
+        ctl.report(0.5, "scanning for prologues");
         for (const elf::Section& sec : image.sections()) {
-            if (!sec.executable())
+            if (!sec.executable() || ctl.cancelled)
                 continue;
             for (u32 addr = sec.addr; addr + 4 <= sec.addr + sec.size; addr += 4) {
+                ++ctl.scanned;
+                if ((ctl.scanned & 0x3FF) == 0) {
+                    ctl.report(0.5 + 0.5 * double(ctl.scanned) / double(ctl.total + 1),
+                               "scanning for prologues");
+                    if (ctl.cancelled)
+                        break;
+                }
                 if (w.claimed.count(addr))
                     continue;
                 auto word = image.read_u32(addr);
                 if (word && is_prologue(*word))
                     w.add_function(addr, FuncSource::Prologue);
             }
+            if (ctl.cancelled)
+                break;
         }
-        process_pending();
+        if (!ctl.cancelled)
+            process_pending();
     }
+
+    if (!ctl.cancelled)
+        ctl.report(1.0, "finalizing");
 
     std::sort(res.functions.begin(), res.functions.end(),
               [](const Function& a, const Function& b) { return a.start < b.start; });

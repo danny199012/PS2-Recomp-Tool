@@ -4,6 +4,7 @@
 #include <ee/elf.hpp>
 #include <ee/types.hpp>
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -41,6 +42,13 @@ struct Options {
     u32 max_table_entries = 256;
 };
 
+// Optional progress / cancellation hook, used by long-running analyses (e.g. the
+// ee-tools GUI) so the caller can show a progress bar and abort early. It is called
+// periodically with a completion fraction in [0,1] and a short status string. Returning
+// false requests cancellation: analyze() stops at the next safe point and returns the
+// partial Result found so far. The callback may be empty (no-op).
+using ProgressFn = std::function<bool(double fraction, const char* status)>;
+
 struct Result {
     std::vector<Function> functions; // sorted by start address
     std::vector<JumpTable> jump_tables;
@@ -53,9 +61,11 @@ struct Result {
 };
 
 // Run function discovery over an executable image. `imports` (address -> name,
-// e.g. from Aura or Ghidra) seed both labels and analysis roots.
+// e.g. from Aura or Ghidra) seed both labels and analysis roots. `progress` is an
+// optional callback for progress reporting and cooperative cancellation.
 Result analyze(const elf::Image& image, const Options& opt = {},
-               const std::map<u32, std::string>& imports = {});
+               const std::map<u32, std::string>& imports = {},
+               ProgressFn progress = {});
 
 // --- Interchange formats -----------------------------------------------------
 

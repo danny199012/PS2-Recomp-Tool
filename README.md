@@ -45,7 +45,10 @@ The core pipeline and a growing runtime are implemented. What exists today:
   CRC32, bind addresses to stub handlers, `EE_REGISTER_GAME_OVERRIDE`)
 - CLIs + GUI: `ee-disasm`, `ee-analyze`, `ee-recomp`, plus three apps —
   `ee-tools` (SDL3 + Dear ImGui GUI for all three tools: ELF info,
-  disassemble, analyze, recompile), `ee-studio` (developer GUI: game library,
+  disassemble, analyze, recompile; loads `.elf` **and** PS2 disc images
+  `.iso`/`.bin` — the boot ELF is auto-extracted via SYSTEM.CNF — and runs
+  every operation on a background thread with a progress bar and Cancel so
+  the window never freezes on large binaries), `ee-studio` (developer GUI: game library,
   ISO boot detection, analyze/recompile, disassembly view), and
   `app/game-launcher` (per-game **release** launcher template: disc-prompt
   GUI -> extract boot ELF -> run; see `docs/LAUNCHER.md`)
