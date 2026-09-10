@@ -103,6 +103,72 @@ inline std::vector<u8> make_analysis_elf() {
     return v;
 }
 
+// A tiny ELF that reproduces the function-overlap bloat bug: `main` (entry)
+// has a branch that jumps *over* a prologue-scanned inner function. The walk
+// sets main.end to the furthest reachable address (the branch target + 4),
+// which spans across the inner function's start, so without the non-overlap
+// finalize pass main and the inner function overlap and emit_function()
+// double-emits the inner code. Used by test_analysis / test_codegen.
+constexpr u32 kOvMain = 0x100000;   // entry, seeded
+constexpr u32 kOvInner = 0x100080;  // discovered by prologue scan
+constexpr u32 kOvTarget = 0x1000C0; // main's branch target (rescued as a fn)
+
+inline std::vector<u8> make_overlap_elf() {
+    constexpr size_t TEXT_OFF = 0x100;
+    constexpr size_t TEXT_SIZE = 0x100;
+    constexpr size_t STRTAB_OFF = 0x200;
+    constexpr size_t SYMTAB_OFF = 0x210;
+    constexpr size_t SHSTRTAB_OFF = 0x240;
+    constexpr size_t SHOFF = 0x26C;
+    constexpr size_t SHNUM = 5;
+    constexpr size_t FILE_SIZE = SHOFF + SHNUM * 40;
+
+    std::vector<u8> v(FILE_SIZE, 0);
+    v[0] = 0x7F; v[1] = 'E'; v[2] = 'L'; v[3] = 'F'; v[4] = 1; v[5] = 1; v[6] = 1;
+    wr16(v, 16, 2); wr16(v, 18, 8); wr32(v, 20, 1); wr32(v, 24, kOvMain);
+    wr32(v, 28, 52); wr32(v, 32, SHOFF); wr16(v, 40, 52); wr16(v, 42, 32); wr16(v, 44, 1);
+    wr16(v, 46, 40); wr16(v, 48, SHNUM); wr16(v, 50, 4); // 1 phdr, shstrndx=4
+
+    // phdr 0: .text (R+X)
+    wr32(v, 52 + 0, 1); wr32(v, 52 + 4, TEXT_OFF); wr32(v, 52 + 8, kTextBase); wr32(v, 52 + 12, kTextBase);
+    wr32(v, 52 + 16, TEXT_SIZE); wr32(v, 52 + 20, TEXT_SIZE); wr32(v, 52 + 24, 5); wr32(v, 52 + 28, 0x1000);
+
+    // .text -- main @ 0x100000
+    wr32(v, TEXT_OFF + 0x00, 0x27BDFFF0); // addiu $sp, $sp, -16
+    wr32(v, TEXT_OFF + 0x04, 0x1000002E); // beq $zero,$zero, -> 0x1000C0 (over the inner fn)
+    wr32(v, TEXT_OFF + 0x08, 0x00000000); // nop (delay slot)
+    wr32(v, TEXT_OFF + 0x0C, 0x03E00008); // jr $ra (not-taken path returns)
+    wr32(v, TEXT_OFF + 0x10, 0x00000000); // nop
+    // 0x100014..0x10007C: zero padding (an unreached hole inside main's walk span)
+    // inner @ 0x100080 (prologue-scanned)
+    wr32(v, TEXT_OFF + 0x80, 0x27BDFFF8); // addiu $sp, $sp, -8  (prologue)
+    wr32(v, TEXT_OFF + 0x84, 0x03E00008); // jr $ra
+    wr32(v, TEXT_OFF + 0x88, 0x27BD0008); // addiu $sp, $sp, 8
+    // 0x10008C..0x1000BC: zero padding
+    // branch target @ 0x1000C0 (rescued as its own function)
+    wr32(v, TEXT_OFF + 0xC0, 0x03E00008); // jr $ra
+    wr32(v, TEXT_OFF + 0xC4, 0x00000000); // nop
+
+    // .strtab / .symtab / .shstrtab (one symbol: main, so it is seeded by name too)
+    std::memcpy(&v[STRTAB_OFF], "\0main", 6);
+    wr32(v, SYMTAB_OFF + 16 + 0, 1); wr32(v, SYMTAB_OFF + 16 + 4, kOvMain); wr32(v, SYMTAB_OFF + 16 + 8, 0x14);
+    v[SYMTAB_OFF + 16 + 12] = 0x12; wr16(v, SYMTAB_OFF + 16 + 14, 1);
+    std::memcpy(&v[SHSTRTAB_OFF], "\0.text\0.symtab\0.strtab\0.shstrtab", 33);
+
+    auto shdr = [&](size_t i, u32 name, u32 type, u32 flags, u32 addr, u32 off, u32 size, u32 link,
+                    u32 info, u32 align, u32 entsize) {
+        const size_t s = SHOFF + i * 40;
+        wr32(v, s + 0, name); wr32(v, s + 4, type); wr32(v, s + 8, flags); wr32(v, s + 12, addr);
+        wr32(v, s + 16, off); wr32(v, s + 20, size); wr32(v, s + 24, link); wr32(v, s + 28, info);
+        wr32(v, s + 32, align); wr32(v, s + 36, entsize);
+    };
+    shdr(1, 1, 1, 6, kTextBase, TEXT_OFF, TEXT_SIZE, 0, 0, 4, 0); // .text
+    shdr(2, 7, 2, 0, 0, SYMTAB_OFF, 32, 3, 1, 4, 16);             // .symtab (link=3 strtab)
+    shdr(3, 15, 3, 0, 0, STRTAB_OFF, 6, 0, 0, 1, 0);              // .strtab
+    shdr(4, 23, 3, 0, 0, SHSTRTAB_OFF, 33, 0, 0, 1, 0);           // .shstrtab
+    return v;
+}
+
 } // namespace ee::test
 
 namespace ee::test {

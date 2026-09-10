@@ -71,6 +71,30 @@ int main() {
     const std::string m3 = ee::codegen::emit_module(*image, res, cfg3);
     CHECK(m3.find("// 00100000: jr $ra") != std::string::npos);
 
+    // Function-overlap bloat regression: without the non-overlap finalize pass,
+    // main's [start, max_end) span contains the inner function, so emit_function()
+    // emits the inner function's first instruction both inside main AND inside the
+    // inner function (the ~450 MB blowup). With the fix, each instruction is
+    // emitted at most once -- the inner function's prologue comment appears once.
+    {
+        auto ov = ee::elf::Image::load_bytes(ee::test::make_overlap_elf());
+        CHECK(ov.has_value());
+        if (ov) {
+            const auto r = ee::analysis::analyze(*ov);
+            const ee::codegen::Config c{};
+            const std::string mm = ee::codegen::emit_module(*ov, r, c);
+            const std::string inner_comment = "// 00100080:";
+            size_t pos = 0, hits = 0;
+            while ((pos = mm.find(inner_comment, pos)) != std::string::npos) {
+                ++hits;
+                pos += inner_comment.size();
+            }
+            CHECK(hits == 1); // exactly one emission of the inner function's entry
+            // The rescued branch target is registered so it can be called.
+            CHECK(mm.find("rt.add(0x001000C0u, fn_001000C0);") != std::string::npos);
+        }
+    }
+
     std::printf("test_codegen: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

@@ -108,6 +108,28 @@ int main() {
         CHECK(res3.jump_tables.empty());
     }
 
+    // Function-overlap bloat regression (see make_overlap_elf): main branches
+    // over a prologue-scanned inner function, so naive max_end bounds overlap.
+    // The finalize pass must make ranges non-overlapping and rescue main's
+    // branch target (0x1000C0) as its own function instead of orphaning it.
+    {
+        auto ov = ee::elf::Image::load_bytes(ee::test::make_overlap_elf());
+        CHECK(ov.has_value());
+        if (ov) {
+            const auto r = ee::analysis::analyze(*ov);
+            CHECK(r.function_at(ee::test::kOvMain) != nullptr);    // main (entry)
+            CHECK(r.function_at(ee::test::kOvInner) != nullptr);   // prologue-scanned
+            CHECK(r.function_at(ee::test::kOvTarget) != nullptr);  // rescued branch target
+            // Invariant: sorted, non-overlapping ranges.
+            for (size_t i = 0; i + 1 < r.functions.size(); ++i)
+                CHECK(r.functions[i].end <= r.functions[i + 1].start);
+            // main must not overlap the inner function (the bloat bug).
+            const auto* m = r.function_at(ee::test::kOvMain);
+            if (m)
+                CHECK(m->end <= ee::test::kOvInner);
+        }
+    }
+
     std::printf("test_analysis: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

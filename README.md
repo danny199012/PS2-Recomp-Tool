@@ -110,6 +110,43 @@ Typical flow: `ee-analyze` to discover functions and emit a config skeleton,
 edit the TOML (stubs/skip/patches), then `ee-recomp` to generate C++, then
 compile the output together with `runtime/`.
 
+## How the pieces fit together (read this if the GUIs confuse you)
+
+The `.csv` / `.json` (Aura / Ghidra function exports) and `.toml` config are
+**build-time** inputs to the analyzer/recompiler — they are *not* things the
+launcher asks for at runtime.
+
+1. **Analyze + recompile an ELF into C++** (build time):
+   `ee-analyze boot.elf --import aura_funcs.csv --toml game.toml`
+   `ee-recomp  boot.elf --config game.toml --out game.recomp.cpp`
+   The `ee-tools` GUI does the same three steps in a window (ELF info →
+   Analyze → Recompile). `ee-recomp`/`ee-tools` emit **one** `.cpp` per ELF.
+
+2. **`game-launcher` is a per-game template, not a general emulator.** It does
+   *not* "load any disc and play it." You build it with **your game's
+   recompiled `.cpp` linked in**:
+   ```
+   cmake -S . -B build -DEE_GAME_RECOMP_SOURCES="C:/.../game.recomp.cpp" ...
+   ```
+   Only then does **Launch game** do anything. Built with no game code
+   (`EE_GAME_RECOMP_SOURCES` empty, the default), the launcher only extracts
+   the boot ELF and shows disc info — **Launch game is disabled** with a
+   tooltip explaining why. See `docs/LAUNCHER.md` for the full per-game flow.
+
+3. **`ee-studio`** is the developer GUI (game library, analyze/recompile,
+   disassembly view). It needs Dear ImGui, which is now **on by default**
+   (`-DEE_WITH_IMGUI=ON`). Without it, ee-studio opens an empty window (it used
+   to close after 100 ms, which looked like "ee-studio doesn't work").
+
+> Note on output size: `ee-recomp` emits one C++ translation unit per ELF. A
+> stripped commercial PS2 ELF with thousands of functions produces a large
+> `.cpp` (turn off comments with `--no-comments` / the *Emit comments* checkbox
+> in `ee-tools` to roughly halve it). A single multi-hundred-MB `.cpp` is not
+> practically compilable by MSVC in one file; this is a known limitation of the
+> current single-file emitter. The analyzer now produces non-overlapping
+> function ranges so code is no longer emitted multiple times (which previously
+> caused a ~450 MB blowup from a ~4 MB ELF).
+
 ## Repository layout
 
 ```

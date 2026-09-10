@@ -353,6 +353,73 @@ Result analyze(const elf::Image& image, const Options& opt, const std::map<u32, 
     std::sort(res.functions.begin(), res.functions.end(),
               [](const Function& a, const Function& b) { return a.start < b.start; });
     std::sort(res.unresolved_indirects.begin(), res.unresolved_indirects.end());
+
+    // Make function ranges non-overlapping so the code generator emits each
+    // instruction at most once, and rescue any code that the change orphans.
+    //
+    // A recursive-descent walk sets `end` to the furthest *reachable* address
+    // (max_end), while the `claimed` map only records reached instructions --
+    // not the whole [start, end) span. The prologue sweep therefore finds
+    // prologues inside the unreached "holes" of a walked function and adds
+    // overlapping functions. Because emit_function() linearly emits every
+    // address in [start, end), overlapping ranges make the recompiler emit the
+    // same code several times: on a real stripped PS2 ELF this turned a 3.8 MB
+    // binary into a ~450 MB .cpp.
+    //
+    // Step 1: remember each function's original (walk-reached) end.
+    // Step 2: truncate each end to the next function's start (non-overlapping).
+    //         Functions with end==0 (unwalked, e.g. analysis cancelled) are
+    //         left untouched (0 is never > the next start).
+    // Step 3: a branch/jump target that a walk reached (claimed) but which now
+    //         falls outside its owner's truncated range -- typically a `jr`/branch
+    //         that jumped *over* a prologue-scanned inner function -- would
+    //         otherwise become an unregistered `call(ctx, addr)` at runtime.
+    //         Rescue each such address as its own function, bounded by the
+    //         original owner end so no new holes are introduced.
+    // Step 4: re-sort and re-truncate so the rescued functions are ordered and
+    //         non-overlapping too.
+    std::map<u32, u32> orig_end; // function start -> pre-truncation end
+    for (const Function& f : res.functions)
+        if (f.end)
+            orig_end[f.start] = f.end;
+
+    auto truncate = [&]() {
+        for (size_t i = 0; i + 1 < res.functions.size(); ++i)
+            if (res.functions[i].end > res.functions[i + 1].start)
+                res.functions[i].end = res.functions[i + 1].start;
+    };
+    truncate();
+
+    {
+        std::set<u32> starts;
+        for (const Function& f : res.functions)
+            starts.insert(f.start);
+        std::map<u32, u32> end_of; // start -> truncated end
+        for (const Function& f : res.functions)
+            end_of[f.start] = f.end;
+
+        bool added = false;
+        for (const auto& [addr, owner] : w.claimed) {
+            if (starts.count(addr))
+                continue; // already a function entry
+            auto it = end_of.find(owner);
+            if (it != end_of.end() && addr < it->second)
+                continue; // still inside its owner's (truncated) range
+            Function f;
+            f.start = addr;
+            f.source = FuncSource::Call;
+            auto oe = orig_end.find(owner);
+            f.end = oe != orig_end.end() ? oe->second : 0; // bounded by owner reach
+            res.functions.push_back(std::move(f));
+            starts.insert(addr);
+            added = true;
+        }
+        if (added) {
+            std::sort(res.functions.begin(), res.functions.end(),
+                      [](const Function& a, const Function& b) { return a.start < b.start; });
+            truncate();
+        }
+    }
     return res;
 }
 
