@@ -21,6 +21,14 @@ Runtime::Runtime() {
     mem.mmio_write = [](u32 addr, u64 value, u32 size, void* user) {
         static_cast<Hw*>(user)->mmio_write(addr, value, size);
     };
+
+    // Generic return handlers for triage (PS2Recomp-compatible: ret0/ret1/reta0).
+    // These let a TOML config bind stripped functions to quick return stubs
+    // (e.g. stubs = ["ret0@0x00123456"]) to classify call importance before
+    // writing a real implementation.
+    add_stub("ret0",  [](EEContext& c) { set32(c, 2, 0); });
+    add_stub("ret1",  [](EEContext& c) { set32(c, 2, 1); });
+    add_stub("reta0", [](EEContext& c) { set32(c, 2, gpr32(c, 4)); });
 }
 
 Runtime::~Runtime() = default; // unique_ptr destroys Kernel, which joins threads

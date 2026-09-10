@@ -95,6 +95,45 @@ int main() {
         }
     }
 
+    // Multi-file output: header declares all functions, each .cpp implements a
+    // chunk, and register_functions lives in its own file. Functions have external
+    // linkage (non-static) so cross-file calls resolve at link time.
+    {
+        const auto res = ee::analysis::analyze(*image);
+        ee::codegen::Options opt;
+        opt.multi_file = true;
+        opt.functions_per_file = 2; // small to force multiple files with 3 functions
+        opt.output_base = "test_game";
+        const ee::codegen::MultiFileResult mf =
+            ee::codegen::emit_module_multi(*image, res, cfg, opt);
+
+        // Header has forward declarations (non-static) + register_functions decl.
+        CHECK(mf.header.find("void fn_00100000([[maybe_unused]] EEContext& ctx);") != std::string::npos);
+        CHECK(mf.header.find("void fn_00100080([[maybe_unused]] EEContext& ctx);") != std::string::npos);
+        CHECK(mf.header.find("void register_functions(ee::rt::Runtime& rt);") != std::string::npos);
+        CHECK(mf.header.find("#pragma once") != std::string::npos);
+
+        // At least 2 source files (3 functions / 2 per file = 2 chunks + 1 register).
+        CHECK(mf.files.size() >= 3); // 2 chunks + 1 register file
+
+        // Chunk files include the header and have non-static function definitions.
+        bool found_external_def = false;
+        bool found_register = false;
+        for (const auto& [fname, content] : mf.files) {
+            if (content.find("#include \"test_game.recomp.h\"") != std::string::npos) {
+                // Non-static (external linkage) definition, not "static void".
+                if (content.find("void fn_00100000([[maybe_unused]] EEContext& ctx) {") != std::string::npos)
+                    found_external_def = true;
+            }
+            if (fname.find("register") != std::string::npos) {
+                CHECK(content.find("rt.add(0x00100000u, fn_00100000);") != std::string::npos);
+                found_register = true;
+            }
+        }
+        CHECK(found_external_def);
+        CHECK(found_register);
+    }
+
     std::printf("test_codegen: %d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
