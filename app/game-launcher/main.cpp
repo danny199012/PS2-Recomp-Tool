@@ -462,7 +462,12 @@ int run_gui(int argc, char** argv) {
             ImGui::SameLine();
             if (ImGui::Button("Browse...")) g.browser.open(".iso;.bin;.elf");
             if (ImGui::Button("Open disc image")) {
-                if (open_disc(g.disc, g.disc_input)) {
+                if (g.disc_input.empty()) {
+                    // No path entered yet: pop the file browser instead of
+                    // silently failing on an empty path (which looked like the
+                    // button "does nothing").
+                    g.browser.open(".iso;.bin;.elf");
+                } else if (open_disc(g.disc, g.disc_input)) {
                     save_boot_elf(g.disc, data_dir(argv[0]));
                     g.status = "Disc opened: " + g.disc.boot_elf;
                     gui_log(g, "disc:  " + g.disc.path + "\n");
@@ -495,6 +500,19 @@ int run_gui(int argc, char** argv) {
                                    EE_GAME_BOOT_ELF, g.disc.boot_name.c_str());
             ImGui::Separator();
             if (!g.running.load()) {
+#if !EE_GAME_HAS_RECOMP
+                // This build has no game code linked in (EE_GAME_RECOMP_SOURCES
+                // was empty), so there is nothing to launch: grey the button out
+                // and explain, instead of letting it run a worker that exits -1
+                // (which looked like a crash / "nothing happened").
+                ImGui::BeginDisabled();
+                ImGui::Button("Launch game");
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("No recompiled game code is linked into this "
+                                      "launcher. Build it with -DEE_GAME_RECOMP_SOURCES "
+                                      "set to your game.recomp.cpp (see docs/LAUNCHER.md).");
+#else
                 if (ImGui::Button("Launch game")) {
                     g.running = true;
                     g.exit_code = 0;
@@ -516,6 +534,7 @@ int run_gui(int argc, char** argv) {
                         gui_log(g, b);
                     });
                 }
+#endif
                 ImGui::SameLine();
                 if (ImGui::Button("Change disc")) g.disc = DiscState{};
             } else {

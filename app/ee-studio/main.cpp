@@ -172,6 +172,9 @@ int main(int argc, char** argv) {
     }
 
     bool quit = false;
+#ifndef EE_HAS_IMGUI
+    bool noted_no_imgui = false;
+#endif
     while (!quit) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -345,10 +348,16 @@ int main(int argc, char** argv) {
         ImGui::Render();
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
 #else
-        for (const auto& g : games)
-            log_msg("[studio] Found: %s", g.name.c_str());
-        SDL_Delay(100);
-        quit = true;
+        // No Dear ImGui: there is nothing to render, so just keep the window
+        // open (do NOT auto-quit after a delay -- that made ee-studio look like
+        // it "doesn't work", flashing a blank window closed). Build with
+        // -DEE_WITH_IMGUI=ON (the default) for the real UI.
+        if (!noted_no_imgui) {
+            std::fprintf(stderr, "ee-studio: built without Dear ImGui "
+                                 "(-DEE_WITH_IMGUI=OFF); showing an empty window. "
+                                 "Rebuild with ImGui for the UI.\n");
+            noted_no_imgui = true;
+        }
 #endif
         SDL_RenderPresent(renderer);
     }
