@@ -115,9 +115,23 @@ inline void set128(EEContext& c, int i, u128 v) { c.r[i] = v; }
 
 // --- memory access (MMIO-aware) -----------------------------------------------
 
+// Bring-up diagnostics: memory-load sampler. ee_note_load records polled
+// addresses into a small histogram (defined in runtime.cpp) so the runner can
+// dump which guest addresses dominate — that identifies spin loops.
+extern "C" void ee_note_load(u32 a);
+
+// Guest-side interrupt polling: injected by the codegen at basic-block labels
+// (loop heads). Delivers queued INTC/alarms so that guest spin loops waiting on
+// interrupt-driven flags make progress without needing a syscall.
+// (Defined out-of-line in runtime.cpp; Kernel's full type lives in kernel.hpp.)
+// The pc argument feeds the sampler's PC attribution (bring-up diagnostics).
+void ee_poll_interrupts(EEContext& c);
+void ee_poll_interrupts(EEContext& c, u32 pc);
+
 inline u32 eff(u32 base, u16 imm) { return base + u32(s32(s16(imm))); }
 
 inline u32 ld32(EEContext& c, u32 a) {
+    ee_note_load(a);
     Memory& m = c.rt->mem;
     if (Memory::is_mmio(a) && m.mmio_read)
         return u32(m.mmio_read(a & 0x1FFFFFFF, 4, m.mmio_user));

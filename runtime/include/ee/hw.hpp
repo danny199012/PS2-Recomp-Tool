@@ -120,6 +120,8 @@ private:
 
 class Hw {
 public:
+    Hw(); // seeds IOP-firmware boot state (SIF/allocator list heads in IOP RAM)
+
     Memory* mem = nullptr; // guest memory (set by Runtime)
     Runtime* runtime = nullptr; // set by Runtime ctor (used for the console sink)
 
@@ -137,6 +139,14 @@ public:
     std::array<u8, 0x100> timers{}; // stub register file
 
     Iop iop;               // IOP HLE (SIF, CDVD, pad, MC)
+
+    // IOP shared memory as seen from the EE: the IOP's RAM/scratchpad/SBUS
+    // region 0x1F000000-0x1FFFFFFF aliased into EE physical space. The game
+    // installs IOP-side structures (thread tables, RPC servers, function
+    // pointers) here and reads them back, so it must be backed by storage.
+    // The SIF register file inside this range is handled by Iop separately.
+    std::vector<u8> iop_mem = std::vector<u8>(0x1000000, 0);
+
     bool vu_micro_run = false;  // set by VIF MSCAL before VU1 step
 
     u64 mmio_read(u32 addr, u32 size);

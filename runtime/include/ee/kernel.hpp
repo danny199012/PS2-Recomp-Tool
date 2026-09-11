@@ -11,6 +11,7 @@
 
 #include <ee/runtime.hpp>
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -38,9 +39,39 @@ public:
     s32 exit_code() const { return m_exit_code; }
 
     // Called by Runtime::load_elf.
-    void note_heap_base(u32 addr) { m_heap_end = addr; }
+    void note_heap_base(u32 addr) { m_heap_start = addr; m_heap_free = addr; m_heap_end = addr + 4 * 1024 * 1024; }
+
+
+    // --- dynamic heap allocator (cooperative bump allocator) -----------------------
+    void*  malloc(u32 size);
+    void   free(void* ptr);
+
+    // --- clock / deferred interrupt delivery ---------------------------------------
+    // Host-driven simulated bus clock (147.456 MHz, advanced by a clock thread).
+    // Alarms (SetAlarm) and INTC interrupts (AddIntcHandler) are queued by the
+    // clock thread and delivered to the guest at syscall boundaries, on the
+    // interrupted thread's EE context (matches HLE recomp runtime practice).
+    u64 busclock() const { return m_busclock.load(std::memory_order_relaxed); }
+    void raise_intc(u32 cause, u32 arg); // thread-safe: queue + fire-at-boundary
+    void fire_pending(EEContext& ctx);   // deliver queued ints/alarms (syscall ctx)
+    // Fast check for injected guest-side polling (see ee_poll_interrupts).
+    bool has_pending() const { return m_pending_count.load(std::memory_order_relaxed) > 0; }
 
 private:
+    struct PendingInt { u32 handler; u32 cause; u32 arg; };
+
+public:
+    // Run one queued interrupt handler on ctx (saves/restores scratch regs).
+    void invoke_handler(EEContext& ctx, const PendingInt& p);
+
+private:
+    std::atomic<u64> m_busclock{0};
+    std::thread m_clock_thread;
+    std::deque<PendingInt> m_pending; // guarded by m_sched
+    std::atomic<int> m_pending_count{0}; // fast check for guest-side polling
+    int m_in_handler = 0; // >0 while an interrupt handler runs (INTC masked)
+    void clock_thread_main();
+
     Runtime& rt;
 
     enum ThreadStatus : u32 {
@@ -136,12 +167,18 @@ private:
     u32 m_dmac_mask = 0;
     u32 m_gs_imr = 0;
     u32 m_heap_end = 0;
-    std::unordered_map<u32, u32> m_intc_handlers;
-    std::unordered_map<u32, u32> m_dmac_handlers;
+    u32 m_heap_start = 0;
+    u32 m_heap_free = 0;
+    std::unordered_map<u32, std::pair<u32, u32>> m_intc_handlers; // cause -> {handler, arg}
+    std::unordered_map<u32, std::pair<u32, u32>> m_dmac_handlers; // channel -> {handler, arg}
     std::unordered_map<u32, u32> m_user_syscalls;
-    std::unordered_map<u32, std::pair<u32, u64>> m_alarms; // id -> {handler, time}
+    struct Alarm { u32 handler; u32 arg; u64 deadline; };
+    std::unordered_map<u32, Alarm> m_alarms; // id -> alarm (fired by clock thread)
     u32 m_next_alarm = 1;
     std::set<s32> m_reported_syscalls;
+    bool m_trace = true; // kernel bring-up tracing (AddIntcHandler/EnableIntc/alarms/SIF)
+
+
 
     void log_unimplemented(s32 code, const char* name);
 };

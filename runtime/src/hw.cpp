@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <ee/hw.hpp>
 #include <ee/iop.hpp>
+#include <ee/kernel.hpp>
 #include <ee/runtime.hpp>
 #include <ee/vu1.hpp>
 
@@ -371,8 +372,7 @@ u32 Dmac::read(u32 addr) const {
     }
 }
 
-void Dmac::write(Hw& hw, u32 addr, u32 value) {
-    const int c = channel_from_addr(addr);
+void Dmac::write(Hw& hw, u32 addr, u32 value) {    const int c = channel_from_addr(addr);
     if (c >= 0) {
         Channel& chn = ch[c];
         switch (addr & 0xFF) {
@@ -411,6 +411,10 @@ void Dmac::start(Hw& hw, int c) {
     Channel& chn = ch[c];
     const u32 mode = (chn.chcr >> 2) & 3;
     ++transfers;
+    static std::set<int> g_reported;
+    if (g_reported.insert(c).second)
+        std::fprintf(stderr, "[dmac] channel %d start: madr=0x%08X qwc=%u tadr=0x%08X mode=%u\n",
+                     c, chn.madr, chn.qwc, chn.tadr, mode);
     if (mode == 1) {
         run_chain(hw, c);
     } else {
@@ -540,6 +544,25 @@ void Dmac::transfer(Hw& hw, int c, u32 addr, u32 qwc, bool to_spr) {
 
 // --- Hw: MMIO routing + guest memory access ----------------------------------------
 
+Hw::Hw() {
+    // IOP boot state: the game's SIF/Apt code walks IOP-side allocator list
+    // heads in the IOP scratchpad (heap base 0x1FFFAC20, head at base+52 =
+    // 0x1FFFAC54; nodes are {size@+4, next@+8, prev@+12} and list walks
+    // terminate on `next == head`). The IOP firmware would have left these as
+    // empty self-linked lists; zero-filled IOP memory sends the walks into
+    // node 0 forever (268M loads at [0]+4/[0]+8 observed). Seed the head the
+    // Urbz SIF library anchors on. The written value must match the pointer
+    // the game holds for the head (its kseg1 alias 0xFFFFAC54).
+    const u32 head = 0xFFFFAC54u;
+    auto put = [&](u32 iop_addr, u32 v) {
+        const u32 off = iop_addr - 0x1F000000;
+        if (off + 4 <= iop_mem.size())
+            std::memcpy(iop_mem.data() + off, &v, 4);
+    };
+    put(0x1FFFAC5C, head); // head->next = head  (empty list)
+    put(0x1FFFAC60, head); // head->prev = head
+}
+
 const u8* Hw::read(u32 addr, u32 size) const {
     (void)size;
     if (!mem)
@@ -578,8 +601,26 @@ u64 Hw::mmio_read(u32 addr, u32 size) {
     // VIF/GIF status registers (stub)
     if (addr >= 0x10003000 && addr < 0x10004000)
         return 0; // GIF_CTRL/STAT, VIF0/1 STAT/FBRST etc.
-    if (addr >= 0x10000000 && addr < 0x10002000) // timers
+    if (addr >= 0x10000000 && addr < 0x10002000) {
+        // Timers: Tn_COUNT registers — return a busclock-derived count so
+        // guest spin loops with timeouts eventually make progress.
+        if (runtime && runtime->kernel)
+            return u32((runtime->kernel->busclock() >> 3) & 0xFFFFFFFFu);
         return 0;
+    }
+    // IOP space (shared bus: IOP RAM/SBUS aliased at 0x1F000000-0x1FFFFFFF).
+    if (addr >= 0x1F000000 && addr < 0x20000000) {
+        // SIF register file is handled by the Iop (DMA kick logic).
+        if (addr >= 0x1FFFFF70 && addr < 0x1FFFFFF8)
+            return iop.sif_read_reg(addr);
+        // Everything else is backed IOP memory so EE<->IOP structure
+        // round-trips (write pointer, read pointer, call) persist.
+        const u32 off = addr - 0x1F000000;
+        u64 v = 0;
+        if (off + size <= iop_mem.size())
+            std::memcpy(&v, iop_mem.data() + off, size);
+        return v;
+    }
     if (reported_mmio.insert(addr).second)
         std::fprintf(stderr, "[hw] mmio read  0x%08X (size %u) -> 0 (stub)\n", addr, size);
     return 0;
@@ -613,6 +654,19 @@ void Hw::mmio_write(u32 addr, u64 value, u32 size) {
         return;
     if (addr >= 0x10000000 && addr < 0x10002000) // timers
         return;
+    // IOP space (shared bus: IOP RAM/SBUS aliased at 0x1F000000-0x1FFFFFFF).
+    if (addr >= 0x1F000000 && addr < 0x20000000) {
+        // SIF register file is handled by the Iop (DMA kick detection).
+        if (addr >= 0x1FFFFF70 && addr < 0x1FFFFFF8) {
+            iop.sif_write_reg(*this, addr, u32(value));
+            return;
+        }
+        // Backed IOP memory (persists EE<->IOP structure writes).
+        const u32 off = addr - 0x1F000000;
+        if (off + size <= iop_mem.size())
+            std::memcpy(iop_mem.data() + off, &value, size);
+        return;
+    }
     if (reported_mmio.insert(addr).second)
         std::fprintf(stderr, "[hw] mmio write 0x%08X = 0x%llX (size %u) (stub)\n", addr,
                      (unsigned long long)value, size);

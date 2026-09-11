@@ -98,8 +98,12 @@ struct Emitter {
     // Emit one non-control-transfer instruction.
     void emit_simple(const r5900::Instruction& in, u32 addr);
     // Emit a branch/jump/call with its delay slot. Returns new addr (addr + 4).
+    // `slot_is_target` is true when some other instruction branches to this
+    // branch's delay-slot address; in that case the slot needs a label and the
+    // branch must be structured so a jump-in executes the slot and falls
+    // through without re-testing the (stale) condition flag.
     void emit_control(const r5900::Instruction& in, const r5900::Instruction& slot, u32 addr,
-                      const analysis::Function& fn);
+                      const analysis::Function& fn, bool slot_is_target);
 
     void emit_function(const analysis::Function& fn) {
         const std::string name = fname(fn.start);
@@ -112,6 +116,10 @@ struct Emitter {
             raw(buf);
         }
         out += "static void " + name + "([[maybe_unused]] EEContext& ctx) {\n";
+        // Reusable branch-condition flag. Declared at function scope so that
+        // gotos never skip over its initialization (MSVC C2362, since branch
+        // conditions are evaluated before the delay slot and tested after).
+        out += "    bool br = false;\n";
 
         const bool named_stub = !fn.name.empty() &&
                                 std::find(cfg.stubs.begin(), cfg.stubs.end(), fn.name) != cfg.stubs.end();
@@ -156,14 +164,27 @@ struct Emitter {
         for (u32 a = fn.start; a + 4 <= fn.end; a += 4) {
             if (labels.count(a)) {
                 out += label(a) + ":\n";
+                // Interrupt poll point: deliver queued INTC/alarms at basic
+                // block heads so spin loops waiting on interrupt-driven flags
+                // make progress (equivalent to hardware interrupt preemption,
+                // but cooperative — handlers run at an instruction boundary
+                // where all guest state lives in ctx). The label address also
+                // feeds the load-address sampler's PC attribution (bring-up).
+                char pb[64];
+                std::snprintf(pb, sizeof pb, "    ee_poll_interrupts(ctx, 0x%08Xu);\n", a);
+                out += pb;
             }
             const r5900::Instruction in = r5900::decode(word_at(a));
-            if (in.has_delay_slot() && a + 8 <= fn.end) {
+            // Note: the delay slot is decoded from the image even when it lies
+            // outside [fn.end) — degenerate 4-byte functions (jump-table targets)
+            // often start on a branch, and truncating emission broke them.
+            if (in.has_delay_slot()) {
                 const r5900::Instruction slot = r5900::decode(word_at(a + 4));
                 comment(in, a);
-                emit_control(in, slot, a, fn);
+                emit_control(in, slot, a, fn, labels.count(a + 4) != 0);
                 a += 4; // consumed the delay slot
-                terminated = in.is_return() || in.op == r5900::Op::J || in.op == r5900::Op::Jr;
+                terminated = in.is_return() || in.op == r5900::Op::J ||
+                             in.op == r5900::Op::Jr || in.op == r5900::Op::Eret;
             } else {
                 comment(in, a);
                 emit_simple(in, a);
@@ -185,7 +206,7 @@ using r5900::Op;
 using r5900::Instruction;
 
 void Emitter::emit_control(const Instruction& in, const Instruction& slot, u32 addr,
-                           const analysis::Function& fn) {
+                           const analysis::Function& fn, bool slot_is_target) {
     auto emit_slot = [&]() {
         comment(slot, addr + 4);
         if (slot.raw != 0) // skip nops
@@ -202,20 +223,24 @@ void Emitter::emit_control(const Instruction& in, const Instruction& slot, u32 a
 
     switch (in.op) {
     case Op::J:
+        if (slot_is_target) line("%s:", label(addr + 4).c_str());
         emit_slot();
         tail_or_goto(r5900::jump_target(in, addr));
         return;
     case Op::Jal:
         line("set32(ctx, 31, 0x%08Xu);", addr + 8);
+        if (slot_is_target) line("%s:", label(addr + 4).c_str());
         emit_slot();
         line("call(ctx, 0x%08Xu);", r5900::jump_target(in, addr));
         return;
     case Op::Jalr:
         line("set64(ctx, %u, 0x%08Xu);", unsigned(in.rd), addr + 8);
+        if (slot_is_target) line("%s:", label(addr + 4).c_str());
         emit_slot();
         line("call(ctx, gpr32(ctx, %u));", unsigned(in.rs));
         return;
     case Op::Jr: {
+        if (slot_is_target) line("%s:", label(addr + 4).c_str());
         emit_slot();
         if (in.rs == 31) {
             line("return;");
@@ -280,6 +305,16 @@ void Emitter::emit_control(const Instruction& in, const Instruction& slot, u32 a
     case Op::Bc1tl:
         cond = "fcc(ctx)";
         break;
+    case Op::Bc0f:
+    case Op::Bc0fl:
+        // COP0 condition (Status.ETS-style) is never set in our HLE runtime,
+        // so branch-if-false is always taken.
+        cond = "true";
+        break;
+    case Op::Bc0t:
+    case Op::Bc0tl:
+        cond = "false";
+        break;
     default:
         line("unimplemented(ctx, 0x%08Xu, 0x%08Xu); // unsupported branch", in.raw, addr);
         emit_slot();
@@ -290,14 +325,31 @@ void Emitter::emit_control(const Instruction& in, const Instruction& slot, u32 a
     if (in.op == Op::Bltzal || in.op == Op::Bgezal || in.op == Op::Bltzall || in.op == Op::Bgezall)
         line("set32(ctx, 31, 0x%08Xu);", addr + 8);
 
-    char cvar[24];
-    std::snprintf(cvar, sizeof cvar, "c_%08X", addr);
-    line("const bool %s = %s;", cvar, cond.c_str());
+    (void)addr;
+    line("br = %s;", cond.c_str());
 
     const u32 t = r5900::branch_target(in, addr);
     const bool local = in_function(fn, t);
+    if (slot_is_target) {
+        // Another instruction branches to this branch's delay slot. Emit the
+        // taken path (slot runs, then jump to the target), then the labeled
+        // slot itself: a jump-in executes the slot and falls through to the
+        // code after the branch without re-testing the (stale) `br` flag.
+        line("if (br) {");
+        emit_slot();
+        if (local)
+            line("goto %s;", label(t).c_str());
+        else {
+            line("call(ctx, 0x%08Xu);", t);
+            line("return; // branch out of function");
+        }
+        line("}");
+        line("%s:", label(addr + 4).c_str());
+        emit_slot();
+        return;
+    }
     if (in.is_likely()) {
-        line("if (%s) {", cvar);
+        line("if (br) {");
         emit_slot();
         if (local) {
             line("goto %s;", label(t).c_str());
@@ -309,9 +361,9 @@ void Emitter::emit_control(const Instruction& in, const Instruction& slot, u32 a
     } else {
         emit_slot();
         if (local) {
-            line("if (%s) goto %s;", cvar, label(t).c_str());
+            line("if (br) goto %s;", label(t).c_str());
         } else {
-            line("if (%s) {", cvar);
+            line("if (br) {");
             line("call(ctx, 0x%08Xu);", t);
             line("return; // branch out of function");
             line("}");
@@ -528,8 +580,14 @@ void Emitter::emit_simple(const Instruction& in, u32 addr) {
     // --- COP0 ---
     case Op::Mfc0: if (rt) line("set32(ctx, %d, ctx.cop0[%d]);", rt, rd); break;
     case Op::Mtc0: line("ctx.cop0[%d] = gpr32(ctx, %d);", rd, rt); break;
-    case Op::Eret: case Op::Tlbr: case Op::Tlbwi: case Op::Tlbwr: case Op::Tlbp:
-        line("unimplemented(ctx, 0x%08Xu, 0x%08Xu); // COP0 maintenance", in.raw, addr); break;
+    case Op::Eret:
+        // The game's exception stubs end with ERET after mtc0 ErrorPC. Since
+        // we never take real exceptions, treat it as a plain return.
+        line("return; // eret");
+        break;
+    case Op::Tlbr: case Op::Tlbwi: case Op::Tlbwr: case Op::Tlbp:
+        // TLB maintenance is a no-op in the HLE kernel (no real TLB).
+        break;
     // --- COP1 (FPU) ---  (fields: fs = rd, ft = rt, fd = sa)
     case Op::AddS: line("fset(ctx, %d, fget(ctx, %d) + fget(ctx, %d));", sa, rd, rt); break;
     case Op::SubS: line("fset(ctx, %d, fget(ctx, %d) - fget(ctx, %d));", sa, rd, rt); break;

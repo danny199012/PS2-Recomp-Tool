@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <algorithm>
 #include <set>
 
 namespace ee::rt {
@@ -30,7 +31,36 @@ Function Runtime::find(u32 addr) const {
     return it != functions.end() ? it->second : nullptr;
 }
 
+void call(EEContext& c, u32 addr) { c.rt->call(c, addr); }
+
 void Runtime::call(EEContext& ctx, u32 addr) {
+    // Calls into the EE kernel-resident area (kseg0 0x80000000-0x800FFFFF maps
+    // to physical 0x00000000-0x000FFFFF, the BIOS/kernel reserved low RAM).
+    // We do not run kernel code (no BIOS dump), so HLE: log and return 0.
+    if ((addr & 0xFFF00000) == 0x80000000) {
+        static std::set<u32> g_kernel_reported;
+        if (g_kernel_reported.insert(addr & 0x7FFFFFFF).second) {
+            std::fprintf(stderr, "[kernel] call into kernel area 0x%08X a0=0x%08X a1=0x%08X a2=0x%08X (HLE: v0=0)\n",
+                         addr, gpr32(ctx, 4), gpr32(ctx, 5), gpr32(ctx, 6));
+        }
+        set32(ctx, 2, 0);
+        return;
+    }
+    // Lightweight sampling profiler: count calls per address, dump the top
+    // entries periodically so bring-up can see where guest time is spent.
+    static std::unordered_map<u32, u64> g_counts;
+    static u64 g_total = 0;
+    if (++g_total % 1000000ull == 0) {
+        std::fprintf(stderr, "[profile] calls=%llu top:", (unsigned long long)g_total);
+        std::vector<std::pair<u32, u64>> top(g_counts.begin(), g_counts.end());
+        std::partial_sort(top.begin(), top.begin() + std::min<size_t>(5, top.size()), top.end(),
+                          [](const auto& a, const auto& b) { return a.second > b.second; });
+        for (size_t i = 0; i < top.size() && i < 5; ++i)
+            std::fprintf(stderr, " 0x%08X=%.1f%%", top[i].first,
+                         100.0 * double(top[i].second) / double(g_total));
+        std::fprintf(stderr, "\n");
+    }
+    ++g_counts[addr];
     if (Function fn = find(addr)) {
         fn(ctx);
         return;
@@ -66,8 +96,6 @@ bool Runtime::load_elf(const elf::Image& image, std::string* error) {
 
 // --- control / calls -----------------------------------------------------------
 
-void call(EEContext& c, u32 addr) { c.rt->call(c, addr); }
-
 void syscall(EEContext& c, u32 code) {
     // The 20-bit code field is sign-extended (negative = i-variant syscalls).
     const s32 scode = (s32(code) << 12) >> 12;
@@ -90,6 +118,80 @@ void stub_call(EEContext& c, const char* name) {
     static std::set<std::string> reported;
     if (reported.insert(name).second)
         std::fprintf(stderr, "[runtime] missing stub: %s (nop)\n", name);
+}
+
+// --- load-address sampler (bring-up diagnostics) ------------------------------------
+namespace {
+std::unordered_map<u32, std::pair<u64, u32>>& g_load_hist() {
+    static std::unordered_map<u32, std::pair<u64, u32>> m;
+    return m;
+}
+// Last basic-block PC (set by ee_poll_interrupts; attributed to loads sampled
+// afterwards — good enough to identify the loop a hot address lives in).
+std::atomic<u32> g_cur_pc{0};
+} // namespace
+
+extern "C" void ee_note_pc(u32 pc) { g_cur_pc.store(pc, std::memory_order_relaxed); }
+
+extern "C" void ee_note_load(u32 a) {
+    static u64 g_spill = 0;
+    auto& m = g_load_hist();
+    if (m.size() >= 65536) {
+        ++g_spill; // runaway working set — don't grow the map unbounded
+        return;
+    }
+    auto it = m.find(a);
+    if (it != m.end()) {
+        ++it->second.first;
+        it->second.second = g_cur_pc.load(std::memory_order_relaxed);
+    } else
+        m[a] = {1, g_cur_pc.load(std::memory_order_relaxed)};
+}
+
+extern "C" void ee_dump_loads() {
+    auto& m = g_load_hist();
+    std::vector<std::pair<u32, std::pair<u64, u32>>> top(m.begin(), m.end());
+    std::partial_sort(top.begin(), top.begin() + std::min<size_t>(6, top.size()), top.end(),
+                      [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
+    std::fprintf(stderr, "[loads] top:");
+    for (size_t i = 0; i < top.size() && i < 6; ++i)
+        std::fprintf(stderr, " 0x%08X=%llu@%08X", top[i].first,
+                     (unsigned long long)top[i].second.first, top[i].second.second);
+    std::fprintf(stderr, " (distinct=%zu)\n", m.size());
+}
+
+// --- guest-side interrupt polling ---------------------------------------------------
+// Called from generated code at basic-block heads (see codegen). Cheap check;
+// delivers queued INTC/alarms when the clock thread has queued any.
+// Also rate-limits a [loads] dump so spin loops inside one long function call
+// (which never returns to the runner's main loop) still get sampled (bring-up).
+void ee_poll_interrupts(EEContext& c) {
+    ee_poll_interrupts(c, 0);
+}
+
+void ee_poll_interrupts(EEContext& c, u32 pc) {
+    if (pc)
+        g_cur_pc.store(pc, std::memory_order_relaxed);
+    // Bring-up probe: sample the Urbz IOP-heap walk registers at its loop heads
+    // (0x38CB70 = loop top, 0x38CC98 = advance) to identify the list anchors.
+    if (pc == 0x0038CB70u || pc == 0x0038CC98u) {
+        static int g_walk_probes = 0;
+        if (g_walk_probes++ < 4)
+            std::fprintf(stderr,
+                         "[walk] pc=%08X s3(head)=%08X s4(base)=%08X s0(node)=%08X s5=%08X\n",
+                         pc, gpr32(c, 19), gpr32(c, 20), gpr32(c, 16), gpr32(c, 21));
+    }
+    static u64 g_polls = 0;
+    if (++g_polls % (16ull * 1024 * 1024) == 0)
+        ee_dump_loads(); // bring-up: sample even inside long-running functions
+    if (c.rt && c.rt->kernel && c.rt->kernel->has_pending()) {
+        static bool g_first = true;
+        if (g_first) {
+            g_first = false;
+            std::fprintf(stderr, "[poll] first pending delivery fired\n");
+        }
+        c.rt->kernel->fire_pending(c);
+    }
 }
 
 // --- mult/div --------------------------------------------------------------------

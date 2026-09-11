@@ -1,16 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <ee/kernel.hpp>
+#include <ee/hw.hpp>
+#include <ee/iop.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+
+// Load-address sampler (bring-up diagnostics, defined in runtime.cpp).
+extern "C" void ee_dump_loads();
 
 namespace ee::rt {
 
-Kernel::Kernel(Runtime& rt) : rt(rt) {}
+Kernel::Kernel(Runtime& rt) : rt(rt) {
+    m_clock_thread = std::thread(&Kernel::clock_thread_main, this);
+}
 
 Kernel::~Kernel() {
     m_destroying = true;
     m_quit = true;
+    if (m_clock_thread.joinable())
+        m_clock_thread.join();
     for (auto& t : m_threads) {
         if (!t->host.joinable())
             continue;
@@ -661,10 +671,160 @@ void Kernel::sys_print(EEContext& ctx) {
     set32(ctx, 2, 0);
 }
 
+
+// --- dynamic heap allocator (bump allocator) -----------------------------------
+void* Kernel::malloc(u32 size) {
+    if (!m_heap_start || size == 0) return nullptr;
+    const u32 aligned_size = (size + 7u) & ~7u;
+    if (m_heap_free >= m_heap_start && m_heap_free + aligned_size <= m_heap_end) {
+        u32 addr = m_heap_free;
+        m_heap_free += aligned_size;
+        return reinterpret_cast<void*>(static_cast<u64>(addr));
+    }
+    std::fprintf(stderr, "[kernel] malloc: out of heap (%u bytes at 0x%08X)\\n", size, m_heap_free);
+    return nullptr;
+}
+
+void Kernel::free(void* ptr) {
+    (void)ptr;
+}
 void Kernel::log_unimplemented(s32 code, const char* name) {
     if (m_reported_syscalls.insert(code).second)
         std::fprintf(stderr, "[kernel] unimplemented syscall %d (%s)\n", code, name);
 }
+
+// --- clock thread / deferred interrupt delivery ------------------------------------
+
+// INTC causes (EE): 2=VBLANK start, 3=VBLANK end, 13=SIF.
+void Kernel::clock_thread_main() {
+    std::fprintf(stderr, "[clock] thread started\n");
+    // EE bus clock: 147.456 MHz. Advance in 1 ms host ticks.
+    constexpr u64 kBusClockHz = 147456000ull;
+    const u64 per_tick = kBusClockHz / 1000;
+    u64 next_vblank = 0;
+    u64 next_timer_tick = 0;
+    u32 vblank_id = 0;
+    u32 dump_ticks = 0;
+    while (!m_destroying) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        // Bring-up diagnostics: dump the top polled guest addresses every ~5 s.
+        if (++dump_ticks % 500 == 0) {
+            std::fprintf(stderr, "[clock] tick=%u pending=%d\n", dump_ticks,
+                         m_pending_count.load(std::memory_order_relaxed));
+            if (dump_ticks % 2500 == 0)
+                ee_dump_loads();
+        }
+        const u64 now = m_busclock.fetch_add(per_tick, std::memory_order_relaxed) + per_tick;
+
+        {
+            std::lock_guard lk(m_sched);
+            // Fire due alarms.
+            for (auto it = m_alarms.begin(); it != m_alarms.end();) {
+                if (now >= it->second.deadline) {
+                    m_pending.push_back({it->second.handler, 0xFFFFFFFFu, it->second.arg});
+                    m_pending_count.fetch_add(1, std::memory_order_relaxed);
+                    it = m_alarms.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            // ~59.94 Hz VBlank pulses (start + end causes).
+            const u64 vblank_period = kBusClockHz / 60;
+            if (now >= next_vblank) {
+                next_vblank = now + vblank_period;
+                const u32 vid = vblank_id++;
+                auto h2 = m_intc_handlers.find(2);
+                if (h2 != m_intc_handlers.end() && (m_intc_mask & (1u << 2))) {
+                    m_pending.push_back({h2->second.first, 2, h2->second.second});
+                    m_pending_count.fetch_add(1, std::memory_order_relaxed);
+                }
+                auto h3 = m_intc_handlers.find(3);
+                if (h3 != m_intc_handlers.end() && (m_intc_mask & (1u << 3))) {
+                    m_pending.push_back({h3->second.first, 3, h3->second.second});
+                    m_pending_count.fetch_add(1, std::memory_order_relaxed);
+                }
+                (void)vid;
+            }
+            // Timer interrupts (INTC causes 10/11/12 = TIMER0/1/2) at ~1 kHz.
+            // Games' scheduler loops wait on these; real timers are programmable
+            // but a steady tick unblocks the common polling patterns.
+            if (now >= next_timer_tick) {
+                next_timer_tick = now + kBusClockHz / 1000;
+                for (u32 cause = 10; cause <= 12; ++cause) {
+                    auto ht = m_intc_handlers.find(cause);
+                    if (ht != m_intc_handlers.end() && (m_intc_mask & (1u << cause))) {
+                        m_pending.push_back({ht->second.first, cause, ht->second.second});
+                        m_pending_count.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void Kernel::raise_intc(u32 cause, u32 arg) {
+    std::lock_guard lk(m_sched);
+    if (m_destroying)
+        return;
+    auto it = m_intc_handlers.find(cause);
+    if (it == m_intc_handlers.end())
+        return;
+    if (!(m_intc_mask & (1u << (cause & 31))))
+        return;
+    m_pending.push_back({it->second.first, cause, arg});
+    m_pending_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Kernel::fire_pending(EEContext& ctx) {
+    // Hardware masks the INTC while a handler runs. Without this, handlers
+    // that spin re-enter fire_pending via guest-side polls and nest
+    // recursively (each queued tick stacking another handler level).
+    if (m_in_handler > 0)
+        return;
+    for (;;) {
+        PendingInt p;
+        {
+            std::lock_guard lk(m_sched);
+            if (m_destroying || m_pending.empty())
+                return;
+            p = m_pending.front();
+            m_pending.pop_front();
+            m_pending_count.fetch_sub(1, std::memory_order_relaxed);
+        }
+        if (!p.handler || !rt.functions.count(p.handler))
+            continue; // handler not recompiled (or not registered) — drop
+        static std::set<u32> g_delivered;
+        if (g_delivered.insert(p.handler).second)
+            std::fprintf(stderr, "[intc] delivering handler 0x%08X (cause %u)\n",
+                         p.handler, p.cause);
+        ++m_in_handler;
+        invoke_handler(ctx, p);
+        --m_in_handler;
+    }
+}
+
+void Kernel::invoke_handler(EEContext& ctx, const PendingInt& p) {
+    // Save caller-saved scratch + return address, invoke, restore.
+    const u128 a0 = ctx.r[4], a1 = ctx.r[5], a2 = ctx.r[6], a3 = ctx.r[7], ra = ctx.r[31];
+    const u128 t0 = ctx.r[8], t1 = ctx.r[9], t2 = ctx.r[10], t3 = ctx.r[11];
+    const u128 t4 = ctx.r[12], t5 = ctx.r[13], t6 = ctx.r[14], t7 = ctx.r[15];
+    if (p.cause == 0xFFFFFFFFu) {
+        // Alarm callback: handler(alarm_id, time, arg) — id/time unused here.
+        set32(ctx, 4, 0);
+        set32(ctx, 5, 0);
+        set32(ctx, 6, p.arg);
+    } else {
+        // INTC: handler(cause, arg)
+        set32(ctx, 4, p.cause);
+        set32(ctx, 5, p.arg);
+    }
+    rt.call(ctx, p.handler);
+    ctx.r[4] = a0; ctx.r[5] = a1; ctx.r[6] = a2; ctx.r[7] = a3;
+    ctx.r[8] = t0; ctx.r[9] = t1; ctx.r[10] = t2; ctx.r[11] = t3;
+    ctx.r[12] = t4; ctx.r[13] = t5; ctx.r[14] = t6; ctx.r[15] = t7;
+    ctx.r[31] = ra;
+}
+
 
 // --- dispatch ----------------------------------------------------------------------
 // Numbers follow ps2sdk's syscallnr.h. Negative codes are i-variants (callable from
@@ -673,13 +833,30 @@ void Kernel::log_unimplemented(s32 code, const char* name) {
 void Kernel::syscall(EEContext& ctx, s32 code) {
     ensure_main_thread(ctx);
 
+    // Deliver queued interrupts/alarms at this boundary (main thread's ctx).
+    fire_pending(ctx);
+
     // user-registered handlers (SetSyscall) take precedence
     if (auto it = m_user_syscalls.find(code); it != m_user_syscalls.end()) {
         rt.call(ctx, it->second);
+        fire_pending(ctx);
         return;
     }
 
     const u32 a0 = gpr32(ctx, 4);
+    // Old libkernel convention: the syscall instruction's code field is 0 and
+    // the actual syscall number is passed in $v1. Re-dispatch through the
+    // standard table using $v1 as the syscall number.
+    if (code == 0) {
+        const u32 v1 = gpr32(ctx, 3);
+        if (v1 != 0) {
+            syscall(ctx, s32(v1));
+            return;
+        }
+        // code==0 and v1==0: treat as an old-style SIF no-op.
+        set32(ctx, 2, 0);
+        return;
+    }
     switch (code) {
     case 0x01: set32(ctx, 2, 0); break; // ResetEE
     case 0x02: set32(ctx, 2, 0); break; // SetGsCrt (recorded; GS comes in M6)
@@ -691,16 +868,20 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
     case 0x0D: case 0x0E: case 0x0F: // SetV*Handler
         set32(ctx, 2, 0);
         break;
-    case 0x10: // AddIntcHandler(cause, handler, arg)
-        m_intc_handlers[a0] = gpr32(ctx, 5);
+    case 0x10: { // AddIntcHandler(cause, handler, arg)
+        if (m_trace)
+            std::fprintf(stderr, "[kernel] AddIntcHandler cause=%u handler=0x%08X arg=0x%08X\n",
+                         a0, gpr32(ctx, 5), gpr32(ctx, 6));
+        m_intc_handlers[a0] = {gpr32(ctx, 5), gpr32(ctx, 6)};
         set32(ctx, 2, a0);
         break;
+    }
     case 0x11: // RemoveIntcHandler
         m_intc_handlers.erase(a0);
         set32(ctx, 2, 0);
         break;
-    case 0x12: // AddDmacHandler
-        m_dmac_handlers[a0] = gpr32(ctx, 5);
+    case 0x12: // AddDmacHandler(channel, handler, arg)
+        m_dmac_handlers[a0] = {gpr32(ctx, 5), gpr32(ctx, 6)};
         set32(ctx, 2, a0);
         break;
     case 0x13:
@@ -710,6 +891,8 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
     case 0x14: case -0x1A: { // _EnableIntc / _iEnableIntc
         const u32 old = m_intc_mask;
         m_intc_mask |= (1u << a0);
+        if (m_trace)
+            std::fprintf(stderr, "[kernel] EnableIntc cause=%u (mask 0x%08X)\n", a0, m_intc_mask);
         set32(ctx, 2, old);
         break;
     }
@@ -731,9 +914,13 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
         set32(ctx, 2, old);
         break;
     }
-    case 0x18: case 0xFC: case -0x1E: case -0xFF: { // SetAlarm family
+    case 0x18: case 0xFC: case -0x1E: case -0xFF: { // SetAlarm(time, handler, arg)
+        if (m_trace)
+            std::fprintf(stderr, "[kernel] SetAlarm time=%u handler=0x%08X arg=0x%08X\n",
+                         a0, gpr32(ctx, 5), gpr32(ctx, 6));
         const u32 id = m_next_alarm++;
-        m_alarms[id] = {gpr32(ctx, 5), gpr(ctx, 6)}; // handler, time (not fired yet — M5)
+        // a0 = relative time in busclock ticks; deadline = now + time.
+        m_alarms[id] = {gpr32(ctx, 5), gpr32(ctx, 6), busclock() + a0};
         set32(ctx, 2, id);
         break;
     }
@@ -780,7 +967,7 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
         set32(ctx, 2, 0);
         break;
     case 0x3D: // SetupHeap
-        m_heap_end = a0;
+        m_heap_start = a0; m_heap_free = a0;
         set32(ctx, 2, 0);
         break;
     case 0x3E: set32(ctx, 2, m_heap_end); break; // EndOfHeap
@@ -831,12 +1018,31 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
         break;
     case 0x75: sys_print(ctx); break;                        // _print
     case 0x76: case -0x76: set32(ctx, 2, 0); break;          // SifDmaStat (complete)
-    case 0x77: case -0x77: set32(ctx, 2, 1); break;          // SifSetDma (fake id)
+    case 0x77: case -0x77: {                                 // SifSetDma
+        // Old libkernel: the EE's whole SIF protocol rides on this syscall.
+        // a0 = SifDmaTransfer_t list {src, dest, size, attr}, a1 = count.
+        // The IOP HLE walks the descriptors, stages payloads into IOP RAM and
+        // dispatches command packets (CHANGE_SADDR/INIT/BIND/CALL/RDATA...),
+        // answering with REND packets into the game's packet buffer + the SIF
+        // interrupt (see Iop::sif_set_dma / sif_process_cmd).
+        const u32 id = rt.hw->iop.sif_set_dma(*rt.hw, a0, (s32)gpr32(ctx, 5));
+        set32(ctx, 2, id);
+        break;
+    }
     case 0x78: case -0x78: set32(ctx, 2, 0); break;          // SifSetDChain
-    case 0x79: set32(ctx, 2, 0); break;                      // SifSetReg
-    case 0x7A: set32(ctx, 2, 0); break;                      // SifGetReg
+    case 0x79: {                                             // SifSetReg(reg, val)
+        rt.hw->iop.sif_set_sysreg(*rt.hw, a0, gpr32(ctx, 5));
+        set32(ctx, 2, 0);
+        break;
+    }
+    case 0x7A:                                               // SifGetReg(reg)
+        set32(ctx, 2, rt.hw->iop.sif_get_sysreg(a0));
+        break;
     case 0x7D: set32(ctx, 2, 0); break;                      // PSMode (0 = PS2)
     case 0x7E: set32(ctx, 2, 0x59); break;                   // MachineType
+    case 0x7B: case 0x7C:                                    // ExecPS2 / RFU060
+        set32(ctx, 2, 0);
+        break;
     case 0x7F: set32(ctx, 2, 32u * 1024 * 1024); break;      // GetMemorySize
     case 0x80: set32(ctx, 2, 0); break;                      // _GetGsDxDyOffset
     case 0x82: set32(ctx, 2, 0); break;                      // _InitTLB
@@ -848,6 +1054,9 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
         set32(ctx, 2, 0);
         break;
     }
+
+    // Deliver interrupts/alarms queued during handling (e.g. SifSetDma).
+    fire_pending(ctx);
 }
 
 } // namespace ee::rt
