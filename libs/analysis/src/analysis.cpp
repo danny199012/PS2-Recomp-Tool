@@ -138,6 +138,28 @@ struct Walker {
                 base[in.rt] = base[in.rs] ? std::optional<u32>(*base[in.rs] + u32(s32(s16(in.imm))))
                                          : std::nullopt;
                 break;
+            case r5900::Op::Sll:
+            case r5900::Op::Sllv:
+            case r5900::Op::Srl:
+            case r5900::Op::Srlv:
+            case r5900::Op::Sra:
+            case r5900::Op::Srav:
+                // Shifts appear in the standard jump-table index*4 chain:
+                //   lui $base,hi; sll $idx,$idx,2; addiu $base,lo;
+                //   addu $t,$idx,$base; lw $tgt,0($t); jr $tgt
+                // The original code fell into `default:` and cleared `rd`,
+                // which broke the chain whenever the shift's destination
+                // is the same register the subsequent `lw` uses as its base
+                // (the SLUS-21066 sub_0038B800 dispatch is exactly that
+                // shape: `sll $v1,$a0,2; ... lw $v1,0($v1); jr $v1`).
+                // The lookback window is small (11 instructions), so we
+                // don't need to track shift semantics; we just need to
+                // keep the base register alive across the shift so the
+                // chain works. The destination may become a constant we
+                // don't know the value of, but `addu`'s
+                // `base[rs]||base[rt]` fallback already handles "one
+                // constant + one unknown" correctly.
+                break;
             case r5900::Op::Ori:
                 base[in.rt] = base[in.rs] ? std::optional<u32>(*base[in.rs] | in.imm) : std::nullopt;
                 break;
@@ -188,7 +210,25 @@ struct Walker {
             auto entry = img.read_u32(*table + i * 4);
             if (!entry || !is_exec_addr(img, *entry))
                 break;
-            jt.targets.push_back(*entry);
+            // Stop on misaligned targets (real jump-table entries are
+            // 4-byte aligned) and on an out-of-window jump: merged
+            // dispatch tables (e.g. SLUS-21066 has two switch
+            // dispatchers sharing one rodata page with their tables
+            // adjacent) would otherwise bleed into the next dispatcher's
+            // targets and claim its case bodies for the wrong function.
+            // Real switch cases stay within a small window of each other;
+            // a 64 KiB gap from the first valid target is the hard stop.
+            // We compare against the first target (not the previous) so
+            // legitimate non-monotonic tables (deduplicated case labels)
+            // don't get truncated early.
+            const u32 e = *entry;
+            if ((e & 3) != 0) break;
+            if (!jt.targets.empty()) {
+                const u32 first = jt.targets.front();
+                const u32 span = (e > first) ? (e - first) : (first - e);
+                if (span > 0x10000u) break;
+            }
+            jt.targets.push_back(e);
         }
         if (jt.targets.empty())
             return std::nullopt;
@@ -196,14 +236,30 @@ struct Walker {
     }
 
     void walk(size_t fi) {
-        Function& fn = res.functions[fi];
-        std::vector<u32> queue{fn.start};
+        // IMPORTANT: `add_function()` push_backs into res.functions *during*
+        // this walk, which may reallocate the vector and invalidate any
+        // reference into it. Holding `Function& fn = res.functions[fi]`
+        // here was undefined behaviour: after a realloc, `fn.start` was
+        // read from freed memory (poisoning `claimed[addr] = fn.start`
+        // with a garbage owner) and the final `fn.end = max_end` /
+        // `fn.has_indirect` writes were lost. The garbage owners then
+        // made the finalize rescue pass promote every claimed address
+        // of the body to its own function, and the follow-up truncate()
+        // cut each one to the next start -- shredding whole switch
+        // bodies into 4-byte "functions" that return immediately,
+        // skipping the shared epilogue (observed on SLUS-21066
+        // sub_0038B800: $sp/$s0-$s7 were never restored, corrupting the
+        // global-heap arena pointer). Copy the start out and write
+        // results back by index instead.
+        const u32 fn_start = res.functions[fi].start;
+        std::vector<u32> queue{fn_start};
         std::set<u32> seen;
-        u32 max_end = fn.start;
+        u32 max_end = fn_start;
+        bool has_indirect = false;
 
         auto cover = [&](u32 addr) {
             seen.insert(addr);
-            claimed[addr] = fn.start;
+            claimed[addr] = fn_start;
             max_end = std::max(max_end, addr + 4);
             if (ctl) {
                 ++ctl->covered;
@@ -237,7 +293,7 @@ struct Walker {
                     if (is_exec_addr(img, t)) {
                         if (known.count(t)) {
                             // tail call into a known function: don't absorb it
-                        } else if (t < fn.start) {
+                        } else if (t < fn_start) {
                             add_function(t, FuncSource::Call); // backward jump out: tail call
                         } else {
                             queue.push_back(t); // local forward jump
@@ -253,7 +309,7 @@ struct Walker {
                 }
                 if (in.op == r5900::Op::Jalr) {
                     res.unresolved_indirects.push_back(addr);
-                    fn.has_indirect = true;
+                    has_indirect = true;
                     addr += 4;
                     continue;
                 }
@@ -266,7 +322,7 @@ struct Walker {
                             res.jump_tables.push_back(std::move(*jt));
                         } else {
                             res.unresolved_indirects.push_back(addr);
-                            fn.has_indirect = true;
+                            has_indirect = true;
                         }
                     }
                     cover_slot();
@@ -282,7 +338,11 @@ struct Walker {
                 addr += 4;
             }
         }
-        fn.end = max_end;
+        // Write back by index: push_backs during the walk may have
+        // reallocated the vector, but indices stay valid (nothing is ever
+        // erased).
+        res.functions[fi].end = max_end;
+        res.functions[fi].has_indirect = has_indirect;
     }
 };
 

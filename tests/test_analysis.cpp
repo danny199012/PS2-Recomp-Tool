@@ -49,6 +49,15 @@ int main() {
         CHECK(res.jump_tables[0].targets.size() == 4);
         CHECK(res.jump_tables[0].targets[0] == 0x100024);
         CHECK(res.jump_tables[0].targets[1] == 0x100030);
+        // Regression: every case entry must be discovered even though the
+        // dispatch chain uses `sll $v1,$a0,2` (the shift's destination is the
+        // same register that the subsequent `addiu $v1,$v1,0x10; lw $v1,0($v1)`
+        // chain uses as the table base). If the resolver clears $v1 on the
+        // shift, the table is unreachable and the walker never queues the
+        // case targets -- exactly what shreds the SLUS-21066 sub_0038B800
+        // switch into 4-byte "functions" at codegen time.
+        CHECK(res.jump_tables[0].targets[2] == 0x100024);
+        CHECK(res.jump_tables[0].targets[3] == 0x100030);
     }
     CHECK(res.unresolved_indirects.empty());
     CHECK(res.function_containing(0x100024) == main_fn);

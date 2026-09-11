@@ -204,7 +204,7 @@ int main() {
             EEContext ctx2;
             ctx2.rt = &rt2;
             CHECK(ld32(ctx2, 0x100000) == 0x27BDFFE0); // first instruction of main
-            CHECK(ld32(ctx2, 0x200000) == 0x00100024); // jump table entry
+            CHECK(ld32(ctx2, ee::test::kTableAddr) == 0x00100024); // jump table entry
         }
     }
     std::printf("test_runtime: %d checks, %d failures\n", g_checks, g_failures);

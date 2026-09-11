@@ -18,7 +18,7 @@ constexpr u32 kTextBase = 0x100000;
 constexpr u32 kMainAddr = 0x100000;
 constexpr u32 kHelperAddr = 0x100080;
 constexpr u32 kHiddenAddr = 0x1000C0;
-constexpr u32 kTableAddr = 0x200000;
+constexpr u32 kTableAddr = 0x200010;
 
 inline std::vector<u8> make_analysis_elf() {
     constexpr size_t TEXT_OFF = 0x100;
@@ -42,16 +42,24 @@ inline std::vector<u8> make_analysis_elf() {
     wr32(v, 52 + 16, TEXT_SIZE); wr32(v, 52 + 20, TEXT_SIZE); wr32(v, 52 + 24, 5); wr32(v, 52 + 28, 0x1000);
     // phdr 1: .rodata (R)
     wr32(v, 84 + 0, 1); wr32(v, 84 + 4, RODATA_OFF); wr32(v, 84 + 8, kTableAddr); wr32(v, 84 + 12, kTableAddr);
-    wr32(v, 84 + 16, 0x10); wr32(v, 84 + 20, 0x10); wr32(v, 84 + 24, 4); wr32(v, 84 + 28, 0x1000);
+    wr32(v, 84 + 16, 0x14); wr32(v, 84 + 20, 0x14); wr32(v, 84 + 24, 4); wr32(v, 84 + 28, 0x1000);
 
     // .text
+    // Regression: the jump-table resolver must see through `sll $idx,$idx,2`
+    // when the shifted register is the same one used as the index in the
+    // subsequent `addu`/`lw` chain. The SLUS-21066 sub_0038B800 dispatch
+    // matches this exact pattern; if the resolver falls into the generic
+    // `default:` switch and clears the destination of the shift, the table
+    // load fails, the case targets are never queued, and the finalize pass
+    // shreds the switch body into 4-byte "functions" (see test_analysis
+    // regression checks below).
     const u32 code[] = {
         0x27BDFFE0, // 0x100000 addiu $sp, $sp, -32
         0x0C040020, // 0x100004 jal 0x100080 (helper)
         0x00000000, // 0x100008 nop (delay slot)
         0x3C030020, // 0x10000C lui $v1, 0x0020
-        0x00041080, // 0x100010 sll $v0, $a0, 2
-        0x00621821, // 0x100014 addu $v1, $v1, $v0
+        0x00031880, // 0x100010 sll $v1, $a0, 2     <-- shifted reg = lw base reg
+        0x24630010, // 0x100014 addiu $v1, $v1, 0x10
         0x8C630000, // 0x100018 lw $v1, 0($v1)
         0x00600008, // 0x10001C jr $v1
         0x00000000, // 0x100020 nop (delay slot)
@@ -75,9 +83,11 @@ inline std::vector<u8> make_analysis_elf() {
     wr32(v, TEXT_OFF + 0xC8, 0x27BD0008); //         addiu $sp, $sp, 8
 
     // .rodata: jump table
-    wr32(v, RODATA_OFF + 0, 0x100024);
-    wr32(v, RODATA_OFF + 4, 0x100030);
-    wr32(v, RODATA_OFF + 8, 0x100024);
+    // Table is at 0x200010, so the case offsets must be relocated.
+    wr32(v, RODATA_OFF + 0x00, 0x100024);
+    wr32(v, RODATA_OFF + 0x04, 0x100030);
+    wr32(v, RODATA_OFF + 0x08, 0x100024);
+    wr32(v, RODATA_OFF + 0x0C, 0x100030);
     wr32(v, RODATA_OFF + 12, 0x100030);
 
     // .strtab / .symtab / .shstrtab
@@ -96,7 +106,7 @@ inline std::vector<u8> make_analysis_elf() {
         wr32(v, s + 32, align); wr32(v, s + 36, entsize);
     };
     shdr(1, 1, 1, 6, kTextBase, TEXT_OFF, TEXT_SIZE, 0, 0, 4, 0); // .text
-    shdr(2, 7, 1, 2, kTableAddr, RODATA_OFF, 0x10, 0, 0, 4, 0);   // .rodata
+    shdr(2, 7, 1, 2, kTableAddr, RODATA_OFF, 0x14, 0, 0, 4, 0);   // .rodata
     shdr(3, 15, 2, 0, 0, SYMTAB_OFF, 48, 4, 1, 4, 16);            // .symtab
     shdr(4, 23, 3, 0, 0, STRTAB_OFF, 13, 0, 0, 1, 0);             // .strtab
     shdr(5, 31, 3, 0, 0, SHSTRTAB_OFF, 41, 0, 0, 1, 0);           // .shstrtab
