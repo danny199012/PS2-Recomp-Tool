@@ -96,8 +96,8 @@ app/game-launcher per-game release launcher (disc prompt GUI)   [in progress]
 - **M5** DMA/VIF/GIF pipeline; VU0 macro codegen  [done: DMA/VIF/GIF subset + VU0 macro]
 - **M6** GS (null → software); SDL3 app shell; first visible homebrew graphics  [partial: software renderer + framebuffer readback, ee-studio shell; Vulkan + visible graphics still open]
 - **M7** VU1 microcode interpreter (standalone lib — prime PS2Recomp contribution)  [done: VU0/VU1 micro interpreter]
-- **M8** IOP HLE: SIF, CDVD, pad, memory card  [partial: SIF/CDVD/pad/MC/SPU2 stubs + RPC table]
-- **M9** First commercial game boots; per-game override/profile system  [partial: override registry + address binding exist; no full commercial title yet]
+- **M8** IOP HLE: SIF, CDVD, pad, memory card  [partial: SIF/CDVD/pad/MC/SPU2 stubs + RPC table; **SIF command processing live (Play! SifCmd port)**: sceSifSetDma descriptor walk, CHANGE_SADDR/SET_SREG/INIT/BIND/CALL/RDATA/REND dispatch, HLE service registry, SIF sysregs + SBUS regs, DMA-kick packet dispatch; IOP-firmware boot list heads seeded — Urbz TIMER2 handler no longer spins on zeroed IOP nodes]
+- **M9** First commercial game boots; per-game override/profile system  [partial: override registry + address binding exist; **SLUS-21066 (Urbz) boot verified end-to-end to the game's own EE-heap phase** — next: game's arena init at 0x4DAC20 bins are zero (heap-init path not yet identified); then CDVD file loading]
 - **M10** Per-game launcher releases: disc-prompt GUI, boot-ELF/asset extraction, one shippable .exe per title  [in progress: app/game-launcher template]
 
 ## Decisions log
