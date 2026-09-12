@@ -540,6 +540,11 @@ void Iop::sif_send_rend(Hw& hw, const u8* request_pkt, u32 sd, u32 buf, u32 cbuf
     std::memcpy(rend + 0x28, &buf, 4);
     std::memcpy(rend + 0x2C, &cbuf, 4);
     sif_deliver_to_ee(hw, rend, sizeof rend);
+    if (m_trace)
+        std::fprintf(stderr, "[sif] REND sent cd=0x%08X opt(sema)=%u sd=0x%08X orig_cid=0x%08X\n",
+                     request_pkt ? pkt_word(request_pkt, 0x1C) : 0, opt,
+                     request_pkt ? pkt_word(request_pkt, 0x24) : 0,
+                     request_pkt ? pkt_word(request_pkt, 0x20) : 0);
 }
 
 void Iop::sif_deliver_to_ee(Hw& hw, const void* pkt, u32 size) {

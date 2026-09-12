@@ -1001,7 +1001,11 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
     case 0x3E: set32(ctx, 2, m_heap_end); break; // EndOfHeap
     case 0x40: sys_create_sema(ctx); break;
     case 0x41: case -0x49: sys_delete_sema(ctx); break;
-    case 0x42: case -0x43: sys_signal_sema(ctx); break;
+    case 0x42: case -0x43: // SignalSema / iSignalSema
+        if (m_trace)
+            std::fprintf(stderr, "[kernel] SignalSema id=%u\n", a0);
+        sys_signal_sema(ctx);
+        break;
     case 0x44: sys_wait_sema(ctx); break;
     case 0x45: case -0x46: sys_poll_sema(ctx); break;
     case 0x47: case -0x48: sys_refer_sema_status(ctx); break;
