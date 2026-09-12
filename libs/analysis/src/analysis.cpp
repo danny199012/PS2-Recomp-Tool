@@ -102,10 +102,27 @@ struct Walker {
     Result& res;
     std::map<u32, u32> claimed; // code address -> owning function start
     std::set<u32> known;        // function starts
+    std::set<u32> forced;       // import-seeded starts (may live outside .text)
     ProgressCtl* ctl = nullptr; // optional progress / cancel hook
 
+    // Executable address, or inside a forced (import-seeded) function window.
+    // Old-libkernel games keep glue code blobs in non-executable data sections
+    // and memcpy them into kernel RAM at boot (SLUS-21066: .data 0x466158 ->
+    // 0x80074000 ...); the game exports name them, and they must be compiled
+    // even though the section flags say "data" (a 4 KiB window covers them).
+    bool addr_ok(u32 addr) const {
+        if (is_exec_addr(img, addr))
+            return true;
+        for (u32 f : forced)
+            if (addr >= f && addr < f + 0x1000)
+                return true;
+        return false;
+    }
+
     bool add_function(u32 addr, FuncSource src) {
-        if (!is_exec_addr(img, addr) || known.count(addr))
+        if (src == FuncSource::Import)
+            forced.insert(addr);
+        if (!addr_ok(addr) || known.count(addr))
             return false;
         known.insert(addr);
         Function f;
@@ -273,7 +290,7 @@ struct Walker {
             u32 addr = queue.back();
             queue.pop_back();
             while (!(ctl && ctl->cancelled)) {
-                if ((addr & 3) || seen.count(addr) || claimed.count(addr) || !is_exec_addr(img, addr))
+                if ((addr & 3) || seen.count(addr) || claimed.count(addr) || !addr_ok(addr))
                     break;
                 auto word = img.read_u32(addr);
                 if (!word)
@@ -284,13 +301,13 @@ struct Walker {
                 cover(addr);
                 const u32 slot = addr + 4;
                 auto cover_slot = [&]() {
-                    if (is_exec_addr(img, slot) && !seen.count(slot) && !claimed.count(slot))
+                    if (addr_ok(slot) && !seen.count(slot) && !claimed.count(slot))
                         cover(slot);
                 };
 
                 if (in.op == r5900::Op::J) {
                     const u32 t = r5900::jump_target(in, addr);
-                    if (is_exec_addr(img, t)) {
+                    if (addr_ok(t)) {
                         if (known.count(t)) {
                             // tail call into a known function: don't absorb it
                         } else if (t < fn_start) {
@@ -363,7 +380,7 @@ Result analyze(const elf::Image& image, const Options& opt, const std::map<u32, 
         if (sec.executable())
             ctl.total += u64(sec.size) / 4;
 
-    Walker w{image, opt, res, {}, {}, &ctl};
+    Walker w{image, opt, res, {}, {}, {}, &ctl};
     ctl.report(0.0, "seeding functions");
 
     if (image.entry() != 0)

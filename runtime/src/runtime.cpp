@@ -39,6 +39,18 @@ Function Runtime::find(u32 addr) const {
         if (it != functions.end())
             return it->second;
     }
+    // Installed code ranges: every address inside an installed blob executes
+    // the compiled source blob at the same offset (position-dependent glue).
+    const u32 phys = addr & 0x1FFFFFFF;
+    for (const AliasRange& r : alias_ranges) {
+        const u32 rdst = r.dst & 0x1FFFFFFF;
+        if (phys >= rdst && phys < rdst + r.size) {
+            it = functions.find(r.src + (phys - rdst));
+            if (it != functions.end())
+                return it->second;
+            return nullptr; // inside an installed blob: never fall through
+        }
+    }
     return nullptr;
 }
 
@@ -87,6 +99,10 @@ void ee_indirect_site(u32 site, u32 target) {
 void call(EEContext& c, u32 addr) { c.rt->call(c, addr); }
 
 void Runtime::call(EEContext& ctx, u32 addr) {
+    // Crash attribution (bring-up): record the PC we're about to execute so a
+    // native fault inside generated/runtime code can be attributed to a guest
+    // address (the runner's SEH handler prints it).
+    ctx.pc = addr;
     // Calls into the EE kernel-resident area (kseg0 0x80000000-0x800FFFFF maps
     // to physical 0x00000000-0x000FFFFF, the BIOS/kernel reserved low RAM).
     // Old-libkernel games install their own libkernel glue into this area at

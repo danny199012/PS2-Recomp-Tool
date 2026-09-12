@@ -25,6 +25,10 @@ struct Memory {
     static constexpr u32 kSprSize = 16 * 1024;
     static constexpr u32 kMmioBase = 0x10000000; // post-mask
 
+    // 8-byte guard slack: guest code legitimately issues unaligned accesses at
+    // the very top of RAM (0x1FFFFFFC..0x1FFFFFFF, e.g. the old-libkernel
+    // FindAddress scan walking to 0x80080000); the tail bytes read as garbage
+    // on real hardware too — the extra slack keeps such reads in-buffer.
     using MmioRead = u64 (*)(u32 addr, u32 size, void* user);
     using MmioWrite = void (*)(u32 addr, u64 value, u32 size, void* user);
 
@@ -34,21 +38,32 @@ struct Memory {
     MmioWrite mmio_write = nullptr;
     void* mmio_user = nullptr;
 
-    Memory() : ram(kRamSize, 0) {}
+    Memory() : ram(kRamSize + 8, 0) {}
 
     static bool is_spr(u32 addr) { return (addr & 0xFFFF0000) == kSprBase; }
     static bool is_mmio(u32 addr) { return (addr & 0x1FFFFFFF) >= kMmioBase && !is_spr(addr); }
 
     // Raw pointer access (RAM/scratchpad only; callers must pre-check MMIO).
+    // Addresses beyond 32 MB (garbage-driven pointers from not-yet-initialized
+    // guest state, e.g. a FindAddress scan walking 0x0200xxxx) mirror-wrap
+    // into RAM (kRamSize is a power of two) instead of overrunning the host
+    // buffer — on a real 32 MB console these would be the second RDRAM bank /
+    // a TLB miss; mirroring keeps bring-up alive.
     u8* translate(u32 addr) {
         if (is_spr(addr))
             return spr.data() + (addr & 0x3FFF);
-        return ram.data() + (addr & 0x1FFFFFFF);
+        u32 off = addr & 0x1FFFFFFF;
+        if (off >= kRamSize)
+            off &= (kRamSize - 1);
+        return ram.data() + off;
     }
     const u8* translate(u32 addr) const {
         if (is_spr(addr))
             return spr.data() + (addr & 0x3FFF);
-        return ram.data() + (addr & 0x1FFFFFFF);
+        u32 off = addr & 0x1FFFFFFF;
+        if (off >= kRamSize)
+            off &= (kRamSize - 1);
+        return ram.data() + off;
     }
 };
 
@@ -69,6 +84,19 @@ struct Runtime {
     // area, which it then calls); the compiled function lives at the source
     // address, and the alias maps the runtime entry point onto it.
     std::unordered_map<u32, u32> aliases;
+
+    // Range alias: the installed copy [dst, dst+size) executes the compiled
+    // functions of the source blob [src, src+size). Covers every internal
+    // call/jump target inside installed glue blobs (old-libkernel blobs are
+    // position-dependent: they call each other through their *installed*
+    // kernel-area addresses). Addresses are matched in physical space
+    // (addr & 0x1FFFFFFF), so kseg0/kseg1/kuseg views all resolve.
+    struct AliasRange {
+        u32 dst;
+        u32 src;
+        u32 size;
+    };
+    std::vector<AliasRange> alias_ranges;
     std::unique_ptr<Kernel> kernel; // syscall HLE + scheduler
     std::unique_ptr<Hw> hw;         // DMAC/VIF/GIF/GS + VU memories + MMIO
 
@@ -84,6 +112,8 @@ struct Runtime {
     void add_stub(const std::string& name, StubHandler fn) { stubs[name] = fn; }
     // Map a guest entry point onto the function compiled at `src` (see aliases).
     void alias(u32 dst, u32 src) { aliases[dst] = src; }
+    // Map an installed code range onto its compiled source blob (see AliasRange).
+    void alias_range(u32 dst, u32 src, u32 size) { alias_ranges.push_back({dst, src, size}); }
     Function find(u32 addr) const;
     void call(EEContext& ctx, u32 addr);
     bool load_elf(const elf::Image& image, std::string* error = nullptr);

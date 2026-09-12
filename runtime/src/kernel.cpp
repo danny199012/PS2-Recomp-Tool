@@ -1002,6 +1002,57 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
     case 0x64: case -0x68: set32(ctx, 2, 0); break;          // FlushCache / iFlushCache
     case 0x66: case -0x6A: set32(ctx, 2, 0); break;          // CpuConfig
     case 0x6B: set32(ctx, 2, 0); break;                      // sceSifStopDma
+    case 0x5A: {                                             // Copy(dst, src, size)
+        // The kernel's block-copy — old-libkernel games use it to install their
+        // own kernel-mode glue into the kernel-reserved RAM area (e.g. Urbz
+        // memcpy's its SIF/CDVD glue blobs into 0x8007xxxx).
+        const u32 dst = a0, src = gpr32(ctx, 5), size = gpr32(ctx, 6);
+        if (size > 0 && size <= 0x100000)
+            std::memcpy(rt.mem.translate(dst), rt.mem.translate(src), size);
+        if (m_trace) {
+            static std::set<u32> g_copy_reported;
+            if (g_copy_reported.insert(dst).second)
+                std::fprintf(stderr, "[kernel] Copy dst=0x%08X src=0x%08X size=0x%X\n", dst, src, size);
+        }
+        set32(ctx, 2, dst);
+        break;
+    }
+    case 0x83: {                                             // FindAddress / block install
+        // Observed use (old-libkernel InitSystemCallTableAddress): installs a
+        // block of syscall glue functions (a2, game RAM) into the kernel area
+        // at a0 and returns the end of the installed copy. The caller installs
+        // two blocks (524 and 360 bytes here) and compares the returned
+        // "start" pointers (end - block size) until they coincide, so the
+        // return must be a0 + block size. Block size is cached per source
+        // (seeded from the observed Urbz install); unknown sources get a log
+        // line so the next size is visible.
+        const u32 dst = a0, src = gpr32(ctx, 6);
+        static std::unordered_map<u32, u32> g_block_sizes = {
+            {0x00440568u, 524}, // Urbz syscall-glue block 1 (InitSystemCallTableAddress)
+            {0x00440530u, 360}, // Urbz syscall-glue block 2
+        };
+        static std::set<u32> g_install_reported;
+        static std::set<u64> g_aliases_done;
+        auto it = g_block_sizes.find(src);
+        if (it == g_block_sizes.end()) {
+            it = g_block_sizes.emplace(src, 4).first;
+            if (g_install_reported.insert(src).second)
+                std::fprintf(stderr, "[kernel] FindAddress install dst=0x%08X src=0x%08X (size unknown, using 4)\n", dst, src);
+        }
+        const u32 size = it->second;
+        {
+            u8* d = rt.mem.translate(dst);
+            const u8* s = rt.mem.translate(src);
+            std::memcpy(d, s, size);
+        }
+        // Register the installed range once so calls into the kernel-area copy
+        // execute the compiled functions at the source addresses.
+        const u64 key = (u64(dst) << 32) | src;
+        if (g_aliases_done.insert(key).second)
+            rt.alias_range(dst, src, size);
+        set32(ctx, 2, dst + size);
+        break;
+    }
     case 0x6C: case 0x6D: set32(ctx, 2, 0); break;           // CPUTimer
     case 0x6E: case 0x6F: set32(ctx, 2, 0); break;           // osd config 2
     case 0x70: case -0x70: set32(ctx, 2, m_gs_imr); break;   // GsGetIMR
@@ -1012,10 +1063,25 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
         break;
     }
     case 0x72: case 0x73: set32(ctx, 2, 0); break; // SetPgifHandler / SetVSyncFlag
-    case 0x74: // SetSyscall(num, handler)
+    case 0x74: { // SetSyscall(num, handler)
+        // The retail kernel keeps its syscall handler table in kernel-reserved
+        // RAM at 0x80000000 (entry N at 0x80000000 + N*4). Old-libkernel games
+        // (SLUS-21066) register their own glue via SetSyscall and then verify
+        // the table with a FindAddress(0x80000000, 0x80080000, handler) scan,
+        // so the handler must actually appear in RAM at num*4 — mirror it.
         m_user_syscalls[a0] = gpr32(ctx, 5);
+        const u32 slot = 0x80000000u + a0 * 4;
+        if (a0 < 0x2000000u / 4)
+            std::memcpy(rt.mem.translate(slot), &m_user_syscalls[a0], 4);
+        if (m_trace) {
+            static std::set<u32> g_setsys_reported;
+            if (g_setsys_reported.insert(a0).second)
+                std::fprintf(stderr, "[kernel] SetSyscall num=%u handler=0x%08X (table 0x%08X)\n",
+                             a0, gpr32(ctx, 5), slot);
+        }
         set32(ctx, 2, 0);
         break;
+    }
     case 0x75: sys_print(ctx); break;                        // _print
     case 0x76: case -0x76: set32(ctx, 2, 0); break;          // SifDmaStat (complete)
     case 0x77: case -0x77: {                                 // SifSetDma
@@ -1046,7 +1112,7 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
     case 0x7F: set32(ctx, 2, 32u * 1024 * 1024); break;      // GetMemorySize
     case 0x80: set32(ctx, 2, 0); break;                      // _GetGsDxDyOffset
     case 0x82: set32(ctx, 2, 0); break;                      // _InitTLB
-    case 0x83: set32(ctx, 2, 0); break;                      // FindAddress
+    // 0x83 (FindAddress / block install) is handled above.
     case 0x85: set32(ctx, 2, 0); break;                      // SetMemoryMode
     case 0x86: set32(ctx, 2, 0); break;                      // GetMemoryMode
     default:

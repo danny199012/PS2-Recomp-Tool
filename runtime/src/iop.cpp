@@ -193,8 +193,15 @@ void Iop::sif_write_reg(Hw& hw, u32 addr, u32 value) {
                              tag, cid, psize);
             if (psize >= 16 && psize <= 0x80)
                 sif_process_cmd(hw, esrc, xfer, m_sub_addr);
-            else if (m_trace)
-                std::fprintf(stderr, "[sif] DMA kick tag=0x%08X (no valid cmd header)\n", tag);
+            else if (m_trace) {
+                std::fprintf(stderr, "[sif] DMA kick tag=0x%08X (no valid cmd header) words:", tag);
+                for (u32 i = 0; i < 16; i += 4) {
+                    u32 w = 0;
+                    std::memcpy(&w, pkt + i, 4);
+                    std::fprintf(stderr, " %08X", w);
+                }
+                std::fprintf(stderr, "\n");
+            }
         } else if (m_trace && tag == 0) {
             std::fprintf(stderr, "[sif] DMA kick (no tag; ack)\n");
         }
@@ -291,9 +298,15 @@ void Iop::sif_process_cmd(Hw& hw, u32 ee_src, u32 size, u32 dest) {
     case SIF_CMD_RPC_CALL:     sif_cmd_call(hw, pkt);        return;
     case SIF_CMD_RPC_RDATA:    sif_cmd_other_data(hw, pkt);  return;
     default:
-        // User commands (game's own IOP modules) have no HLE implementation.
-        if ((m_unknown_cids++) < 8)
-            std::fprintf(stderr, "[sif] unknown command cid=0x%08X (dropped)\n", cid);
+        // User commands (game's own IOP modules) and old-libkernel SIF packets
+        // have no HLE implementation yet. Dump the header so the packet format
+        // can be decoded from the trace (bring-up).
+        if ((m_unknown_cids++) < 8) {
+            std::fprintf(stderr, "[sif] unknown command cid=0x%08X (dropped) header:", cid);
+            for (u32 i = 0; i < 16 && i < size; i += 4)
+                std::fprintf(stderr, " %08X", pkt_word(pkt, i));
+            std::fprintf(stderr, "\n");
+        }
         return;
     }
 }
