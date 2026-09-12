@@ -15,6 +15,7 @@
 #include <ee/iop.hpp>
 #include <unordered_map>
 #include <vector>
+#include <ee/cdvd.hpp>
 
 namespace ee::rt {
 
@@ -139,6 +140,10 @@ public:
     std::array<u8, 0x100> timers{}; // stub register file
 
     Iop iop;               // IOP HLE (SIF, CDVD, pad, MC)
+
+    // The disc image backing the CDVD HLE (empty = no disc loaded). The Iop's
+    // cdvdfsv RPC server reads sectors/files through this (see iop.cpp).
+    Cdvd cdvd;
 
     // IOP shared memory as seen from the EE: the IOP's RAM/scratchpad/SBUS
     // region 0x1F000000-0x1FFFFFFF aliased into EE physical space. The game

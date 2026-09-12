@@ -6,6 +6,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <set>
+
+#include <ee/cdvd.hpp>
 
 namespace ee::rt {
 
@@ -409,8 +412,12 @@ void Iop::sif_cmd_call(Hw& hw, const u8* pkt) {
         if (sif_rpc_module_lookup(sid, name)) {
             if (m_trace)
                 std::fprintf(stderr, "[sif] CALL module='%s' rpc=0x%X\n", name, rpc_number);
-            // CDVD/file I/O handled in a follow-up; complete the request with
-            // a successful (empty) reply so waiting clients proceed.
+            if (name && std::strcmp(name, "cdvdfsv") == 0) {
+                sif_cdvdfsv(hw, pkt, sid, rpc_number);
+                return;
+            }
+            // Other modules (fileio/loadcore/mcman/padman): complete the request
+            // with a successful (empty) reply so waiting clients proceed.
             sif_send_rend(hw, pkt, sd, 0, 0);
             return;
         }
@@ -535,10 +542,126 @@ void Iop::sif_set_sysreg(Hw& hw, u32 reg, u32 value) {
 // --- CDVD -----------------------------------------------------------------------------
 
 u32 Iop::cdvd_read(u32 lba, u8* buf, u32 sectors) {
-    // HLE: return zeros (no disc loaded). Real implementation would read from ISO.
+    // With a disc image loaded the reads come from the ISO filesystem.
+    if (cdvd && cdvd->is_open()) {
+        if (!cdvd->read_sectors(lba, sectors, buf))
+            return 0; // read error
+        return sectors;
+    }
+    // No disc loaded: return zeros (HLE "no disc" behaviour).
     if (buf && sectors > 0)
         std::memset(buf, 0, sectors * 2048);
     return sectors; // pretend success
+}
+
+// --- cdvdfsv RPC server -----------------------------------------------------------------
+//
+// The EE's SCE libcdvd (old libkernel) BINDs per-function servers in the
+// 0x80000592..0x8000059C range ("cdvdfsv") and SifCallRpc's them. The request
+// payload stays in EE RAM (the packet's send field points at it; the IOP reads
+// it over the shared bus). Replies are written into the request's EE recv
+// buffer, followed by the REND packet (sif_rpc_reply).
+//
+// Sid map (ps2sdk ee/rpc/cdvd/src/libcdvd.c + SCE old libcdvd):
+//   0x80000592 CD_SERVER_INIT       sceCdInit        {mode} -> CdInitPkt (versions)
+//   0x80000593 CD_SERVER_READ       sceCdRead        {lba, sectors, buf, mode}
+//   0x80000594 CD_SERVER_SEEK/READ  (n-cmd family)
+//   0x80000596 CD_SERVER_POFF       power-off (XCDVDFSV)
+//   0x80000597 CD_SERVER_SEARCHFILE sceCdSearchFile  {pad32, name[256], dest}
+//   0x8000059A CD_SERVER_DISKREADY  sceCdDiskReady   {mode} -> 2 (ready)
+// Unknown sids get a logged generic success so the client's wait completes
+// (bring-up: the log line identifies what to implement next).
+
+void Iop::sif_rpc_reply(Hw& hw, const u8* request_pkt, u32 sd, const void* data, u32 size) {
+    if (data && size > 0 && hw.mem) {
+        const u32 recvbuf = pkt_word(request_pkt, 0x28);
+        const u32 recv_size = pkt_word(request_pkt, 0x2C);
+        const u32 n = size < recv_size ? size : recv_size;
+        if (recvbuf != 0 && n > 0)
+            std::memcpy(hw.mem->translate(recvbuf & 0x1FFFFFFF), data, n);
+    }
+    sif_send_rend(hw, request_pkt, sd, 0, 0);
+}
+
+void Iop::sif_cdvdfsv(Hw& hw, const u8* pkt, u32 sid, u32 rpc_number) {
+    // The request payload: EE address in the CALL packet's send field (0x38).
+    const u32 send = pkt_word(pkt, 0x38);
+    const u32 send_size = pkt_word(pkt, 0x24);
+    const u8* req = (hw.mem && send != 0) ? hw.mem->translate(send & 0x1FFFFFFF) : nullptr;
+    auto req_word = [&](u32 off) -> u32 { u32 v = 0; if (req) std::memcpy(&v, req + off, 4); return v; };
+
+    switch (sid) {
+    case 0x80000592: { // CD_SERVER_INIT: sceCdInit(mode) -> CdInitPkt
+        if (m_trace)
+            std::fprintf(stderr, "[cdvd] INIT mode=%u\n", req_word(0));
+        // CdInitPkt {init_result, cdvdfsv_version, cdvdman_version, verbose}:
+        // report SDK 2.x module versions (like retail rom0 modules).
+        const u32 reply[4] = {1, 0x0205, 0x0205, 0};
+        sif_rpc_reply(hw, pkt, sid, reply, sizeof reply);
+        return;
+    }
+    case 0x80000593:   // CD_SERVER_READ: sceCdRead(lba, sectors, buf, mode)
+    case 0x80000594: { // CD_SERVER_SEEK/read family (same argument shape)
+        const u32 lba = req_word(0);
+        const u32 sectors = req_word(4);
+        const u32 buf = req_word(8);
+        if (m_trace)
+            std::fprintf(stderr, "[cdvd] READ lba=%u sectors=%u buf=0x%08X (send_size=%u)\n",
+                         lba, sectors, buf, send_size);
+        u32 done = 0;
+        if (buf != 0 && sectors > 0 && hw.mem && cdvd && cdvd->is_open()) {
+            // Read in chunks directly into EE RAM (the request's buffer).
+            done = cdvd_read(lba, hw.mem->translate(buf & 0x1FFFFFFF), sectors);
+        }
+        // sceCdRead reply: {sectors read, error}
+        const u32 reply[2] = {done, done == sectors ? 0 : 1};
+        sif_rpc_reply(hw, pkt, sid, reply, sizeof reply);
+        return;
+    }
+    case 0x80000597: { // CD_SERVER_SEARCHFILE: sceCdSearchFile
+        // SearchFilePkt {u8 padding[32]; char name[256]; void* dest}:
+        // reply is the 32-byte sceCdlFILE {lsn, size, name[16], date[8]}.
+        char name[256] = {};
+        if (req)
+            std::memcpy(name, req + 32, sizeof name - 1);
+        name[sizeof name - 1] = 0;
+        u8 reply[32] = {};
+        u32 lba = 0, size = 0;
+        bool found = false;
+        if (cdvd && cdvd->is_open())
+            found = cdvd->find_file(name, lba, size);
+        if (found) {
+            std::memcpy(reply + 0, &lba, 4);
+            std::memcpy(reply + 4, &size, 4);
+            // name[16] at +8, date[8] at +24 stay zero.
+            if (m_trace)
+                std::fprintf(stderr, "[cdvd] SEARCHFILE '%s' -> lba=%u size=%u\n", name, lba, size);
+        } else {
+            if (m_trace)
+                std::fprintf(stderr, "[cdvd] SEARCHFILE '%s' -> not found\n", name);
+        }
+        sif_rpc_reply(hw, pkt, sid, reply, sizeof reply);
+        return;
+    }
+    case 0x80000596: // CD_SERVER_POFF (power-off request): ack, do nothing.
+        sif_rpc_reply(hw, pkt, sid, nullptr, 0);
+        return;
+    case 0x8000059A: { // CD_SERVER_DISKREADY: sceCdDiskReady(mode) -> 2 = ready
+        const u32 ready = (cdvd && cdvd->is_open()) ? 2 : 0;
+        sif_rpc_reply(hw, pkt, sid, &ready, 4);
+        return;
+    }
+    default: {
+        // Log-once per sid so the next needed command is visible in the trace.
+        static std::set<u32> reported;
+        if (reported.insert(sid).second)
+            std::fprintf(stderr, "[cdvd] cdvdfsv sid=0x%08X rpc=0x%X send=0x%08X (generic ack)\n",
+                         sid, rpc_number, send);
+        u32 ack = 1;
+        sif_rpc_reply(hw, pkt, sid, &ack, 4);
+        return;
+    }
+    }
 }
 
 // --- Pad -------------------------------------------------------------------------------

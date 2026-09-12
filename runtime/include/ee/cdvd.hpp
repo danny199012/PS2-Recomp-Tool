@@ -31,6 +31,11 @@ public:
     // Read a file by path from the ISO filesystem (ISO9660 Level 1).
     std::optional<std::vector<u8>> read_file(const std::string& path);
 
+    // Locate a file's extent (LBA + byte size) without reading its data.
+    bool find_file(const std::string& path, u32& lba, u32& size) {
+        return find_file_recursive(path, m_root_lba, m_root_size, lba, size);
+    }
+
     // Get total sector count.
     u32 sector_count() const { return m_sectors; }
 

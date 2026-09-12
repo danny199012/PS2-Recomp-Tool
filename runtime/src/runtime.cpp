@@ -28,7 +28,60 @@ Runtime::~Runtime() = default; // unique_ptr destroys Kernel, which joins thread
 
 Function Runtime::find(u32 addr) const {
     auto it = functions.find(addr);
-    return it != functions.end() ? it->second : nullptr;
+    if (it != functions.end())
+        return it->second;
+    // Aliased entry points (code installed at a different address at boot —
+    // e.g. old-libkernel blobs copied into the kernel area — resolve to the
+    // function compiled at the copy's source address).
+    auto al = aliases.find(addr);
+    if (al != aliases.end()) {
+        it = functions.find(al->second);
+        if (it != functions.end())
+            return it->second;
+    }
+    return nullptr;
+}
+
+bool Runtime::open_disc(const std::string& iso_path, std::string* boot_elf_path) {
+    if (!hw)
+        return false;
+    if (!hw->cdvd.open(iso_path)) {
+        std::fprintf(stderr, "[runtime] cannot open disc image %s\n", iso_path.c_str());
+        return false;
+    }
+    std::fprintf(stderr, "[runtime] disc image %s open (%u sectors)\n", iso_path.c_str(),
+                 hw->cdvd.sector_count());
+    if (boot_elf_path) {
+        if (auto boot = hw->cdvd.find_boot_elf())
+            *boot_elf_path = *boot;
+    }
+    return true;
+}
+
+void ee_indirect_site(u32 site, u32 target) {
+    // Histogram of dynamic targets taken at unresolved indirect jr/jalr sites.
+    // Dumps the top-N targets (and where they were reached from) every few
+    // million hits so bring-up can see which sites are actually hot and what
+    // they jump to — the same evidence shape as the load-address sampler.
+    struct Info { u64 count = 0; u32 first_site = 0; };
+    static std::unordered_map<u32, Info> g_targets;
+    static u64 g_total = 0;
+    auto& info = g_targets[target];
+    if (info.count == 0)
+        info.first_site = site;
+    ++info.count;
+    if (++g_total % 4000000ull == 0) {
+        std::vector<std::pair<u32, Info>> top(g_targets.begin(), g_targets.end());
+        std::partial_sort(top.begin(), top.begin() + std::min<size_t>(10, top.size()), top.end(),
+                          [](const auto& a, const auto& b) { return a.second.count > b.second.count; });
+        std::fprintf(stderr, "[indirect] calls=%llu targets=%zu top:",
+                     (unsigned long long)g_total, g_targets.size());
+        for (size_t i = 0; i < top.size() && i < 10; ++i)
+            std::fprintf(stderr, " 0x%08X=%.1f%%@0x%08X", top[i].first,
+                         100.0 * double(top[i].second.count) / double(g_total),
+                         top[i].second.first_site);
+        std::fprintf(stderr, "\n");
+    }
 }
 
 void call(EEContext& c, u32 addr) { c.rt->call(c, addr); }
@@ -36,8 +89,16 @@ void call(EEContext& c, u32 addr) { c.rt->call(c, addr); }
 void Runtime::call(EEContext& ctx, u32 addr) {
     // Calls into the EE kernel-resident area (kseg0 0x80000000-0x800FFFFF maps
     // to physical 0x00000000-0x000FFFFF, the BIOS/kernel reserved low RAM).
-    // We do not run kernel code (no BIOS dump), so HLE: log and return 0.
+    // Old-libkernel games install their own libkernel glue into this area at
+    // boot (memcpy blobs from their rodata, e.g. SLUS-21066 -> 0x80074000/
+    // 0x80075000/0x80076000) and then call into it; those entry points are
+    // registered as aliases (Runtime::alias) onto the compiled source blobs,
+    // so try the function table first and only fall back to the HLE nop.
     if ((addr & 0xFFF00000) == 0x80000000) {
+        if (Function fn = find(addr)) {
+            fn(ctx);
+            return;
+        }
         static std::set<u32> g_kernel_reported;
         if (g_kernel_reported.insert(addr & 0x7FFFFFFF).second) {
             std::fprintf(stderr, "[kernel] call into kernel area 0x%08X a0=0x%08X a1=0x%08X a2=0x%08X (HLE: v0=0)\n",

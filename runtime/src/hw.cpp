@@ -545,6 +545,8 @@ void Dmac::transfer(Hw& hw, int c, u32 addr, u32 qwc, bool to_spr) {
 // --- Hw: MMIO routing + guest memory access ----------------------------------------
 
 Hw::Hw() {
+    iop.cdvd = &cdvd; // the IOP's cdvdfsv server reads the disc through Hw
+
     // IOP boot state: the game's SIF/Apt code walks IOP-side allocator list
     // heads in the IOP scratchpad (heap base 0x1FFFAC20, head at base+52 =
     // 0x1FFFAC54; nodes are {size@+4, next@+8, prev@+12} and list walks

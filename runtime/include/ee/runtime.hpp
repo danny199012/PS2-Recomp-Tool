@@ -63,6 +63,12 @@ struct Runtime {
     Memory mem;
     std::unordered_map<u32, Function> functions;
     std::unordered_map<std::string, StubHandler> stubs;
+    // Address aliases: dst -> src. find(dst) resolves to the function
+    // registered at src. Used for code the game installs elsewhere in memory
+    // at boot (e.g. old-libkernel blobs copied into the 0x8007xxxx kernel
+    // area, which it then calls); the compiled function lives at the source
+    // address, and the alias maps the runtime entry point onto it.
+    std::unordered_map<u32, u32> aliases;
     std::unique_ptr<Kernel> kernel; // syscall HLE + scheduler
     std::unique_ptr<Hw> hw;         // DMAC/VIF/GIF/GS + VU memories + MMIO
 
@@ -76,10 +82,23 @@ struct Runtime {
 
     void add(u32 addr, Function fn) { functions[addr] = fn; }
     void add_stub(const std::string& name, StubHandler fn) { stubs[name] = fn; }
+    // Map a guest entry point onto the function compiled at `src` (see aliases).
+    void alias(u32 dst, u32 src) { aliases[dst] = src; }
     Function find(u32 addr) const;
     void call(EEContext& ctx, u32 addr);
     bool load_elf(const elf::Image& image, std::string* error = nullptr);
+    // Open a disc image (.iso/.bin) for the CDVD HLE (Hw::cdvd / cdvdfsv RPC).
+    // On success, optionally returns the boot ELF path from SYSTEM.CNF.
+    bool open_disc(const std::string& iso_path, std::string* boot_elf_path = nullptr);
 };
+
+// Bring-up instrumentation for unresolved indirect transfers (jr/jalr whose
+// target the static analyzer could not pin down — jump-table candidates,
+// function-pointer calls, etc.). Generated code calls this right before the
+// dynamic `call(ctx, gpr32(...))` so the runtime can histogram the targets
+// actually taken (same shape as the load-address sampler). Cheap: one map
+// increment; periodic top-N dump to stderr.
+void ee_indirect_site(u32 site, u32 target);
 
 struct EEContext {
     u128 r[32]{}; // GPRs; r[0] is never written (codegen skips writes to $zero)

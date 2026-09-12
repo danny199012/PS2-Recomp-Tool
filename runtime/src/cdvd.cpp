@@ -132,9 +132,12 @@ std::optional<std::string> Cdvd::find_boot_elf() {
     u32 lba, size;
     if (!find_file_recursive("SYSTEM.CNF", m_root_lba, m_root_size, lba, size))
         return std::nullopt;
-    std::vector<u8> data(size);
-    if (!read_sectors(lba, (size + kSectorSize - 1) / kSectorSize, data.data()))
+    // Read whole sectors (read_sectors always writes full 2048-byte sectors),
+    // then truncate to the file's actual size.
+    std::vector<u8> data(size_t((u64(size) + kSectorSize - 1) / kSectorSize) * kSectorSize);
+    if (!read_sectors(lba, u32(data.size() / kSectorSize), data.data()))
         return std::nullopt;
+    data.resize(std::min<size_t>(data.size(), size));
     // Parse for BOOT2 = cdrom0:\path;1
     std::string text(data.begin(), data.begin() + std::min<size_t>(data.size(), 4096));
     auto pos = text.find("BOOT2");
@@ -169,9 +172,11 @@ std::optional<std::vector<u8>> Cdvd::read_file(const std::string& path) {
     u32 lba, size;
     if (!find_file_recursive(path, m_root_lba, m_root_size, lba, size))
         return std::nullopt;
-    std::vector<u8> data(size);
-    if (!read_sectors(lba, (size + kSectorSize - 1) / kSectorSize, data.data()))
+    // Read whole sectors, then truncate to the file's actual size.
+    std::vector<u8> data(size_t((u64(size) + kSectorSize - 1) / kSectorSize) * kSectorSize);
+    if (!read_sectors(lba, u32(data.size() / kSectorSize), data.data()))
         return std::nullopt;
+    data.resize(size);
     return data;
 }
 

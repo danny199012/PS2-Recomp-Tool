@@ -26,7 +26,12 @@ struct Config {
 };
 
 struct Options {
-    bool emit_comments = true; // annotate generated code with addresses + disassembly
+    bool emit_comments = true;  // annotate generated code with addresses + disassembly
+    // Instrument unresolved indirect transfers (jr/jalr the analyzer could not
+    // resolve to a function or jump table): generated code calls the runtime
+    // helper ee_indirect_site(site, target) before the dynamic dispatch, which
+    // histograms the taken targets (bring-up diagnostics; see runtime.hpp).
+    bool indirect_trace = true;
 };
 
 // Emit a single C++ translation unit implementing all analyzed functions.

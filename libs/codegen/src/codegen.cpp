@@ -237,6 +237,8 @@ void Emitter::emit_control(const Instruction& in, const Instruction& slot, u32 a
         line("set64(ctx, %u, 0x%08Xu);", unsigned(in.rd), addr + 8);
         if (slot_is_target) line("%s:", label(addr + 4).c_str());
         emit_slot();
+        if (opt.indirect_trace)
+            line("ee_indirect_site(0x%08Xu, gpr32(ctx, %u));", addr, unsigned(in.rs));
         line("call(ctx, gpr32(ctx, %u));", unsigned(in.rs));
         return;
     case Op::Jr: {
@@ -254,10 +256,14 @@ void Emitter::emit_control(const Instruction& in, const Instruction& slot, u32 a
                     line("case 0x%08Xu: goto %s;", t, label(t).c_str());
             line("default: break;");
             line("}");
+            if (opt.indirect_trace)
+                line("ee_indirect_site(0x%08Xu, gpr32(ctx, %u));", addr, unsigned(in.rs));
             line("call(ctx, gpr32(ctx, %u)); // unresolved jump-table entry", unsigned(in.rs));
             line("return;");
             return;
         }
+        if (opt.indirect_trace)
+            line("ee_indirect_site(0x%08Xu, gpr32(ctx, %u));", addr, unsigned(in.rs));
         line("call(ctx, gpr32(ctx, %u)); // indirect tail call", unsigned(in.rs));
         line("return;");
         return;

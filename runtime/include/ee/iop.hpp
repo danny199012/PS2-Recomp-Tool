@@ -17,6 +17,7 @@
 namespace ee::rt {
 
 class Hw;
+class Cdvd;
 
 class Iop {
 public:
@@ -33,9 +34,13 @@ public:
     void sif_write_reg(Hw& hw, u32 addr, u32 value);
     std::unordered_map<u32, u32>& sif_regs() { return m_sif_regs; }
 
-    // CDVD: minimal HLE - returns fixed disc info.
+    // CDVD: reads through the loaded disc image (Hw::cdvd) when one is open;
+    // falls back to zero-filled "no disc" sectors otherwise.
     u32 cdvd_read(u32 lba, u8* buf, u32 sectors);
     void cdvd_init() { m_cdvd_ready = true; }
+
+    // The disc image backing the CDVD HLE (owned by Hw; nullptr until set).
+    Cdvd* cdvd = nullptr;
 
     // Pad: returns a fixed/programmatic pad state.
     struct PadState { u32 buttons; u8 lx, ly, rx, ry; };
@@ -132,6 +137,16 @@ public:
     void sif_cmd_call(Hw& hw, const u8* pkt);
     void sif_cmd_other_data(Hw& hw, const u8* pkt);
     void sif_cmd_rend(Hw& hw, const u8* pkt);
+
+    // cdvdfsv RPC server (SCE CDVD library, old-libkernel protocol): answers
+    // the EE libcdvd's SifCallRpc requests with the per-function sids it BINDs
+    // (ps2sdk libcdvd: CD_SERVER_INIT/SEARCHFILE/DISKREADY...). See sif_cdvdfsv.
+    void sif_cdvdfsv(Hw& hw, const u8* pkt, u32 sid, u32 rpc_number);
+
+    // Complete an RPC request with data: copy `size` bytes of `data` into the
+    // request's EE recv buffer (SifRpcCallPkt recvbuf@0x28, recv_size@0x2C),
+    // then deliver the REND packet for `sd`.
+    void sif_rpc_reply(Hw& hw, const u8* request_pkt, u32 sd, const void* data, u32 size);
 
     // Build + deliver an SIFRPCRENDPKT (0x30 bytes) completion packet for a
     // request packet, into the EE's registered packet buffer (INTC 13 fires).
