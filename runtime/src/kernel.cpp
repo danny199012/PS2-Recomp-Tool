@@ -745,11 +745,13 @@ void Kernel::clock_thread_main() {
                 }
                 (void)vid;
             }
-            // Timer interrupts (INTC causes 10/11/12 = TIMER0/1/2) at ~1 kHz.
-            // Games' scheduler loops wait on these; real timers are programmable
-            // but a steady tick unblocks the common polling patterns.
+            // Timer interrupts (INTC causes 10/11/12 = TIMER0/1/2).
+            // Real timers fire when COUNT reaches the guest-programmed COMPARE;
+            // without full timer emulation a steady low-rate tick unblocks the
+            // common polling patterns. 100 Hz keeps the game's timer handler
+            // from starving the main thread (it was overserviced at 1 kHz).
             if (now >= next_timer_tick) {
-                next_timer_tick = now + kBusClockHz / 1000;
+                next_timer_tick = now + kBusClockHz / 100;
                 for (u32 cause = 10; cause <= 12; ++cause) {
                     auto ht = m_intc_handlers.find(cause);
                     if (ht != m_intc_handlers.end() && (m_intc_mask & (1u << cause))) {
@@ -773,6 +775,29 @@ void Kernel::raise_intc(u32 cause, u32 arg) {
         return;
     m_pending.push_back({it->second.first, cause, arg});
     m_pending_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Kernel::raise_dmac(u32 channel, u32 arg) {
+    // DMAC handler interrupts: SIF reply packets are delivered by a SIF0
+    // (channel 5) DMA completion — old-libkernel games register their sifcmd
+    // processor as a DMAC handler (AddDmacHandler(5, _SifCmdIntHandler) +
+    // EnableDmac(5)) and every incoming SIF packet wakes that handler.
+    std::lock_guard lk(m_sched);
+    if (m_destroying)
+        return;
+    auto it = m_dmac_handlers.find(channel);
+    if (it == m_dmac_handlers.end())
+        return;
+    if (!(m_dmac_mask & (1u << (channel & 31)))) {
+        static std::set<u32> g_mask_reported;
+        if (g_mask_reported.insert(channel).second)
+            std::fprintf(stderr, "[kernel] dmac handler for ch%u fired while disabled (delivering anyway)\n", channel);
+    }
+    m_pending.push_back({it->second.first, channel, arg});
+    m_pending_count.fetch_add(1, std::memory_order_relaxed);
+    static std::set<u32> g_dmac_reported;
+    if (g_dmac_reported.insert(channel).second)
+        std::fprintf(stderr, "[kernel] raise_dmac ch=%u handler=0x%08X\n", channel, it->second.first);
 }
 
 void Kernel::fire_pending(EEContext& ctx) {
@@ -882,6 +907,9 @@ void Kernel::syscall(EEContext& ctx, s32 code) {
         break;
     case 0x12: // AddDmacHandler(channel, handler, arg)
         m_dmac_handlers[a0] = {gpr32(ctx, 5), gpr32(ctx, 6)};
+        if (m_trace)
+            std::fprintf(stderr, "[kernel] AddDmacHandler ch=%u handler=0x%08X arg=0x%08X\n",
+                         a0, gpr32(ctx, 5), gpr32(ctx, 6));
         set32(ctx, 2, a0);
         break;
     case 0x13:

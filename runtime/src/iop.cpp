@@ -23,6 +23,7 @@ Iop::Iop() {
     m_sub_addr = 0x1FFFC000; // IOP command receive buffer (backed by iop_mem)
     m_sm_flag = SIF_STAT_SIFINIT | SIF_STAT_CMDINIT | SIF_STAT_BOOTEND; // 0x70000
     m_sreg[0] = 1;           // SIF_SREG_RPCINIT
+    m_iop_mem_size = 0x200000; // real IOP RAM is 2 MiB (sysmem reportable size)
 
     // HLE IOP RPC services (Play!'s module service ids — the game BINDs these).
     m_sif_modules[0x80000001] = "fileio";
@@ -36,6 +37,7 @@ Iop::Iop() {
     m_sif_modules[0x8000010F] = "padman";
     m_sif_modules[0x8000011F] = "padman";
     m_sif_modules[0x80000140] = "sio2man";
+    m_sif_modules[0x80000003] = "sysmem";
 }
 
 // --- SIF DMA -------------------------------------------------------------------------
@@ -110,7 +112,7 @@ void Iop::sif_dma_trigger(Hw& hw, int ch) {
 
     // Raise the SIF interrupt (INTC cause 13) so the EE's SIF handler runs.
     if (hw.runtime && hw.runtime->kernel)
-        hw.runtime->kernel->raise_intc(13, 0);
+        hw.runtime->kernel->raise_intc(1, 0);
 
     m_sif_init_done = true;
 }
@@ -121,7 +123,7 @@ void Iop::sif0_complete(Hw& hw) {
     m_sif0.chcr &= ~1u;
     m_sif0.madr = 0;
     if (hw.runtime && hw.runtime->kernel)
-        hw.runtime->kernel->raise_intc(13, 0);
+        hw.runtime->kernel->raise_intc(1, 0);
     m_sif_init_done = true;
 }
 
@@ -146,11 +148,13 @@ u32 Iop::sif_read_reg(u32 addr) const {
     case 0x1000F230: return m_sm_flag;
     }
     auto it = m_sif_regs.find(addr);
-    if (it != m_sif_regs.end())
-        return it->second;
+    u32 v = (it != m_sif_regs.end()) ? it->second : 0;
     if (addr == 0x1000F300)
-        return 0x70000u; // SIF_STAT_SIFINIT | SIF_STAT_CMDINIT | SIF_STAT_BOOTEND
-    return 0;
+        v = 0x70000u; // SIF_STAT_SIFINIT | SIF_STAT_CMDINIT | SIF_STAT_BOOTEND
+    if (m_trace && (m_reg_trace += 1) < 400) {
+        std::fprintf(stderr, "[sif] reg read  0x%08X = 0x%08X\n", addr, v);
+    }
+    return v;
 }
 
 void Iop::sif_write_reg(Hw& hw, u32 addr, u32 value) {
@@ -208,7 +212,7 @@ void Iop::sif_write_reg(Hw& hw, u32 addr, u32 value) {
 
         // Raise the SIF interrupt (INTC cause 13).
         if (hw.runtime && hw.runtime->kernel)
-            hw.runtime->kernel->raise_intc(13, 0);
+            hw.runtime->kernel->raise_intc(1, 0);
         m_sif_init_done = true;
         if (m_trace)
             std::fprintf(stderr, "[sif] DMA kick done (tadr=0x%08X)\n", tag);
@@ -326,8 +330,10 @@ static void deliver_rpcinit_sreg(Iop& iop, Hw& hw) {
 }
 
 void Iop::sif_cmd_change_addr(Hw& hw, const u8* pkt) {
-    // SifCmdChgAddrData_t: {header, buf} — the EE's command packet buffer.
-    const u32 buf = pkt_word(pkt, 0x14);
+    // SifCmdChgAddrData_t: {header(0x10), buf@0x10} — the EE's command packet
+    // buffer. (buf sits directly after the 16-byte header; 0x14 was reading
+    // the next word — garbage — which made every RPC reply DMA into RAM[5].)
+    const u32 buf = pkt_word(pkt, 0x10);
     m_ee_recv_addr = buf;
     if (m_trace)
         std::fprintf(stderr, "[sif] CHANGE_SADDR ee_recv_addr=0x%08X\n", buf);
@@ -351,10 +357,10 @@ void Iop::sif_cmd_set_sreg(Hw& hw, const u8* pkt) {
 }
 
 void Iop::sif_cmd_init(Hw& hw, const u8* pkt) {
-    // SifCmdChgAddrData_t {header, buf}: buf = the EE packet buffer.
+    // SifCmdChgAddrData_t {header(0x10), buf@0x10}: buf = the EE packet buffer.
     // The IOP's init handler (sif_sys_cmd_handler_init_from_ee): record the
     // EE receive address, raise CMDINIT, and mark RPC init done.
-    const u32 buf = pkt_word(pkt, 0x14);
+    const u32 buf = pkt_word(pkt, 0x10);
     m_ee_recv_addr = buf;
     m_sm_flag |= SIF_STAT_CMDINIT;
     m_sreg[0] = 1; // SIF_SREG_RPCINIT
@@ -429,6 +435,38 @@ void Iop::sif_cmd_call(Hw& hw, const u8* pkt) {
                 sif_cdvdfsv(hw, pkt, sid, rpc_number);
                 return;
             }
+            if (name && std::strcmp(name, "sysmem") == 0) {
+                // sysmem RPC: args in the EE send buffer, reply to recvbuf.
+                const u32 send = pkt_word(pkt, 0x38);
+                u32 a0 = 0, a1 = 0;
+                if (hw.mem && send != 0) {
+                    const u8* req = hw.mem->translate(send & 0x1FFFFFFF);
+                    std::memcpy(&a0, req + 0, 4);
+                    std::memcpy(&a1, req + 4, 4);
+                }
+                u32 result = 0;
+                switch (rpc_number) {
+                case 0x01: result = sysmem_alloc(a0); break;          // AllocateMemory
+                case 0x02: result = sysmem_free(a0); break;           // FreeMemory
+                case 0x05: result = sysmem_query_mem_size(); break;   // QueryMemSize
+                case 0x06: result = m_iop_mem_size - m_iop_heap_ptr; break; // QueryMaxFreeMemSize
+                case 0x07: result = m_iop_mem_size - m_iop_heap_ptr; break; // QueryTotalFreeMemSize
+                default:
+                    static std::set<u32> g_sysmem_reported;
+                    if (g_sysmem_reported.insert(rpc_number).second)
+                        std::fprintf(stderr, "[sysmem] unknown rpc method 0x%X (ack 0)\n", rpc_number);
+                    result = 0;
+                    break;
+                }
+                if (m_trace)
+                    std::fprintf(stderr, "[sysmem] rpc=0x%X a0=0x%08X -> 0x%08X\n", rpc_number, a0, result);
+                sif_rpc_reply(hw, pkt, sd, &result, 4);
+                return;
+            }
+            if (name && std::strcmp(name, "cdvdfsv") == 0) {
+                sif_cdvdfsv(hw, pkt, sid, rpc_number);
+                return;
+            }
             // Other modules (fileio/loadcore/mcman/padman): complete the request
             // with a successful (empty) reply so waiting clients proceed.
             sif_send_rend(hw, pkt, sd, 0, 0);
@@ -479,7 +517,11 @@ void Iop::sif_send_rend(Hw& hw, const u8* request_pkt, u32 sd, u32 buf, u32 cbuf
     const u32 psize_dsize = 0x30;
     const u32 dest = request_pkt ? pkt_word(request_pkt, 4) : 0;
     const u32 cid = SIF_CMD_RPC_END;
-    const u32 opt = 0;
+    // The client's wait semaphore rides in the header's opt field: the game's
+    // _SifRpcEnd does `if (rend->hdr.opt) iSignalSema(rend->hdr.opt)` — echo
+    // the request's opt (the BIND/CALL packet's semaid) back, or the client
+    // wait never completes and every bind/call retry-loops forever.
+    const u32 opt = request_pkt ? pkt_word(request_pkt, 0x0C) : 0;
     std::memcpy(rend + 0x00, &psize_dsize, 4);
     std::memcpy(rend + 0x04, &dest, 4);
     std::memcpy(rend + 0x08, &cid, 4);
@@ -512,10 +554,19 @@ void Iop::sif_deliver_to_ee(Hw& hw, const void* pkt, u32 size) {
         return;
     u8* dst = hw.mem->translate(m_ee_recv_addr & 0x1FFFFFFF);
     std::memcpy(dst, pkt, size);
-    // SIF0 DMA completion: the SIF interrupt (INTC cause 13) drives the
-    // game's _SifCmdIntHandler, which dispatches the packet by cid.
-    if (hw.runtime && hw.runtime->kernel)
-        hw.runtime->kernel->raise_intc(13, 0);
+    // Old-libkernel sifcmd: incoming packets are delivered by a SIF0
+    // (DMAC channel 5) DMA completion — the game registered
+    // AddDmacHandler(5, _SifCmdIntHandler) + EnableDmac(5) in sceSifInitCmd,
+    // so raise the DMAC channel-5 interrupt (the INTC SBUS raise is kept for
+    // kernels that register a SBUS handler instead).
+    if (hw.runtime && hw.runtime->kernel) {
+        hw.runtime->kernel->raise_dmac(5, 0);
+        hw.runtime->kernel->raise_intc(1, 0);
+    }
+    // The game also polls IOP-side SIF command registers (0x1FFFFF70/80/88/90
+    // in a cycle); 0x1FFFFF88 stays 0 until we mark it — write the packet size
+    // as the "packet available" flag so the polling path sees fresh data.
+    m_sif_regs[0x1FFFFF88] = size;
 }
 
 bool Iop::sif_rpc_module_lookup(u32 sid, const char*& name) const {
@@ -675,6 +726,47 @@ void Iop::sif_cdvdfsv(Hw& hw, const u8* pkt, u32 sid, u32 rpc_number) {
         return;
     }
     }
+}
+
+// --- IOP sysmem (sid 0x80000003) -------------------------------------------------------
+//
+// The EE BINDs sysmem to allocate IOP RAM (heap, DMA buffers, module load
+// space). RPC methods (Play! CSysmem::Invoke, old-libkernel protocol):
+//   0x01 AllocateMemory(size)           -> addr (old: SifAllocate)
+//   0x02 FreeMemory(addr)               -> 0
+//   0x05 QueryMemSize()                 -> total
+//   0x06 QueryMaxFreeMemSize()          -> largest free
+//   0x07 QueryTotalFreeMemSize()        -> total free
+// Unknown methods get a generic ack + a log line so the next one is visible.
+
+u32 Iop::sysmem_alloc(u32 size) {
+    std::lock_guard lk(m_mutex);
+    // Old-libkernel sysmem aligns allocations to 0x10 and rounds up.
+    size = (size + 0xF) & ~0xFu;
+    if (size == 0)
+        size = 0x10;
+    if (m_iop_heap_ptr + size > m_iop_mem_size)
+        return 0; // out of IOP memory
+    const u32 addr = m_iop_heap_ptr;
+    m_iop_heap_ptr += size;
+    m_iop_blocks.push_back({addr, size});
+    if (m_trace)
+        std::fprintf(stderr, "[sysmem] alloc 0x%X -> 0x%05X (heap 0x%05X/%05X)\n",
+                     size, addr, m_iop_heap_ptr, m_iop_mem_size);
+    return addr;
+}
+
+u32 Iop::sysmem_free(u32 addr) {
+    std::lock_guard lk(m_mutex);
+    for (size_t i = 0; i < m_iop_blocks.size(); ++i) {
+        if (m_iop_blocks[i].addr == addr) {
+            m_iop_blocks.erase(m_iop_blocks.begin() + i);
+            if (m_trace)
+                std::fprintf(stderr, "[sysmem] free 0x%05X\n", addr);
+            return 0;
+        }
+    }
+    return -1; // not found
 }
 
 // --- Pad -------------------------------------------------------------------------------

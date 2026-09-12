@@ -476,8 +476,14 @@ void Emitter::emit_simple(const Instruction& in, u32 addr) {
     // --- system ---
     case Op::Syscall: line("syscall(ctx, 0x%05Xu);", (in.raw >> 6) & 0xFFFFF); break;
     case Op::Break: line("unimplemented(ctx, 0x%08Xu, 0x%08Xu); // break", in.raw, addr); break;
-    case Op::Sync: case Op::Pref: case Op::Cache: case Op::Ei: case Op::Di:
+    case Op::Sync: case Op::Pref: case Op::Cache:
         break; // nops for recompilation purposes
+    case Op::Ei: // EI: enable interrupts (COP0 Status.EIE = bit 16)
+        line("ctx.cop0[12] |= 0x10000u;");
+        break;
+    case Op::Di: // DI: disable interrupts (COP0 Status.EIE = bit 16)
+        line("ctx.cop0[12] &= ~0x10000u;");
+        break;
     case Op::Tge: line("if (s64(gpr(ctx, %d)) >= s64(gpr(ctx, %d))) unimplemented(ctx, 0x%08Xu, 0x%08Xu);", rs, rt, in.raw, addr); break;
     case Op::Tgeu: line("if (gpr(ctx, %d) >= gpr(ctx, %d)) unimplemented(ctx, 0x%08Xu, 0x%08Xu);", rs, rt, in.raw, addr); break;
     case Op::Tlt: line("if (s64(gpr(ctx, %d)) < s64(gpr(ctx, %d))) unimplemented(ctx, 0x%08Xu, 0x%08Xu);", rs, rt, in.raw, addr); break;

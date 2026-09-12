@@ -53,6 +53,7 @@ public:
     // interrupted thread's EE context (matches HLE recomp runtime practice).
     u64 busclock() const { return m_busclock.load(std::memory_order_relaxed); }
     void raise_intc(u32 cause, u32 arg); // thread-safe: queue + fire-at-boundary
+    void raise_dmac(u32 channel, u32 arg); // thread-safe: queue + fire-at-boundary
     void fire_pending(EEContext& ctx);   // deliver queued ints/alarms (syscall ctx)
     // Fast check for injected guest-side polling (see ee_poll_interrupts).
     bool has_pending() const { return m_pending_count.load(std::memory_order_relaxed) > 0; }
