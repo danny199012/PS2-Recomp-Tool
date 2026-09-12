@@ -60,6 +60,17 @@ public:
     void register_rpc(const std::string& name, RpcHandler handler);
     u32 call_rpc(const std::string& name, const u8* in, u32 in_size, u8* out, u32 out_size);
 
+    // --- IOP sysmem (sid 0x80000003): SIF RPC service ---------------------
+    // The game BINDs sysmem to allocate IOP RAM (heap + DMA buffers + module
+    // load space). Allocator over iop_mem; region starts above the kernel
+    // structures. Returns IOP addresses (0x000xxxxx as seen from IOP kuseg;
+    // the EE's alias of IOP RAM is 0x1F000000 + addr).
+    static constexpr u32 kIopHeapBase = 0x00100000; // 1 MiB in
+    u32 sysmem_alloc(u32 size);                     // returns IOP addr or 0
+    u32 sysmem_free(u32 addr);                      // returns 0 on success
+    u32 sysmem_query_mem_size() const { return (u32)m_iop_mem_size; }
+    void set_iop_mem_size(u32 size) { m_iop_mem_size = size; }
+
     // SIF mailbox communication.
     struct SifCmd {
         u32 data[4]; // command header
@@ -143,6 +154,11 @@ public:
     // (ps2sdk libcdvd: CD_SERVER_INIT/SEARCHFILE/DISKREADY...). See sif_cdvdfsv.
     void sif_cdvdfsv(Hw& hw, const u8* pkt, u32 sid, u32 rpc_number);
 
+    // padman RPC (input): answers libpad's Open/SetMainMode/Close and serves
+    // idle pad data (no buttons, centered sticks) so the game's input init
+    // proceeds. Real host-keyboard mapping is a follow-up.
+    void sif_padman(Hw& hw, const u8* pkt, u32 sid, u32 rpc_number);
+
     // Complete an RPC request with data: copy `size` bytes of `data` into the
     // request's EE recv buffer (SifRpcCallPkt recvbuf@0x28, recv_size@0x2C),
     // then deliver the REND packet for `sd`.
@@ -188,6 +204,12 @@ private:
     PadState m_pad[2] = {};
     std::mutex m_mutex;
     std::vector<SifCmd> m_sif_cmd_queue;
+
+    // IOP sysmem state (bump allocator with a free list for sysmem_free).
+    u32 m_iop_mem_size = 0x200000;  // 2 MiB IOP RAM
+    u32 m_iop_heap_ptr = kIopHeapBase;
+    struct IopBlock { u32 addr; u32 size; };
+    std::vector<IopBlock> m_iop_blocks; // allocated blocks (for free)
 
     // SIF registers
     u32 m_sif_ms_f200 = 0;

@@ -467,7 +467,11 @@ void Iop::sif_cmd_call(Hw& hw, const u8* pkt) {
                 sif_cdvdfsv(hw, pkt, sid, rpc_number);
                 return;
             }
-            // Other modules (fileio/loadcore/mcman/padman): complete the request
+            if (name && std::strcmp(name, "padman") == 0) {
+                sif_padman(hw, pkt, sid, rpc_number);
+                return;
+            }
+            // Other modules (fileio/loadcore/mcman): complete the request
             // with a successful (empty) reply so waiting clients proceed.
             sif_send_rend(hw, pkt, sd, 0, 0);
             return;
@@ -815,6 +819,73 @@ u32 Iop::call_rpc(const std::string& name, const u8* in, u32 in_size, u8* out, u
     if (it == m_rpc_handlers.end())
         return 0; // unhandled
     return it->second(in, in_size, out, out_size);
+}
+
+// --- padman RPC (input) -------------------------------------------------------------
+//
+// libpad (EE) BINDs padman (sids 0x80000100/01/0F/1F) and SifCallRpc's it to
+// open ports and read pad state. We answer the init calls and serve idle pad
+// data (no buttons pressed, centered analog sticks) so input init proceeds.
+// The pad data packet the EE expects (32 bytes at +4 of the recv buffer):
+//   +0  u16 buttons (0 = none pressed)
+//   +24 u8 rx, +25 u8 ry, +26 u8 lx, +27 u8 ly (0x80 = centered)
+//   ... analog button pressure bytes follow.
+
+void Iop::sif_padman(Hw& hw, const u8* pkt, u32 sid, u32 rpc_number) {
+    // Args live in the EE send buffer (CALL packet send field @0x38).
+    const u32 send = pkt_word(pkt, 0x38);
+    u32 a0 = 0;
+    if (hw.mem && send != 0) {
+        const u8* req = hw.mem->translate(send & 0x1FFFFFFF);
+        if (req)
+            std::memcpy(&a0, req + 0, 4);
+    }
+    // Reply buffer for pad data (CALL recvbuf @0x28, recv_size @0x2C).
+    const u32 recvbuf = pkt_word(pkt, 0x28);
+    const u32 recv_size = pkt_word(pkt, 0x2C);
+
+    switch (rpc_number) {
+    case 0x01:
+    case 0x80000100: // Open(port, slot, ...) -> return handle in a0
+        if (m_trace)
+            std::fprintf(stderr, "[padman] Open port=%u\n", a0);
+        {
+            u32 result = 0; // handle 0 = ok
+            sif_rpc_reply(hw, pkt, sid, &result, 4);
+        }
+        return;
+    case 0x80000105: // SetMainMode
+    case 0x8000010D: // Close
+        if (m_trace)
+            std::fprintf(stderr, "[padman] rpc=0x%X ack\n", rpc_number);
+        {
+            u32 result = 0;
+            sif_rpc_reply(hw, pkt, sid, &result, 4);
+        }
+        return;
+    default:
+        // Any other call (e.g. pad-data read): serve idle pad state into the
+        // recv buffer and ack.
+        if (recvbuf != 0 && recv_size >= 32 && hw.mem) {
+            u8 pad[32] = {};
+            // buttons @+0 already 0 (none pressed)
+            pad[24] = 0x80; // rx centered
+            pad[25] = 0x80; // ry centered
+            pad[26] = 0x80; // lx centered
+            pad[27] = 0x80; // ly centered
+            std::memcpy(hw.mem->translate(recvbuf & 0x1FFFFFFF), pad, 32);
+        }
+        if (m_trace) {
+            static std::set<u32> g_pad_reported;
+            if (g_pad_reported.insert(rpc_number).second)
+                std::fprintf(stderr, "[padman] rpc=0x%X (idle pad, %u bytes)\n", rpc_number, recv_size);
+        }
+        {
+            u32 result = 0;
+            sif_rpc_reply(hw, pkt, sid, &result, 4);
+        }
+        return;
+    }
 }
 
 // --- SIF command queue ----------------------------------------------------------------
